@@ -16,11 +16,16 @@ uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
                 
 
 */
-float grid(in vec2 uv, in float size)
+float verticalLine(in vec2 uv, in float size)
 {
     uv = fract(uv);
-    return smoothstep(0.0, size*0.05, abs(uv.x-0.5))
-            *smoothstep(0.0, size*0.05, abs(uv.y-0.5));
+    return 1.0 - smoothstep(0.0, size*0.05, abs(uv.x - 0.5));
+}
+
+float horizontalLine(in vec2 uv, in float size)
+{
+    uv = fract(uv);
+    return 1.0 - smoothstep(0.0, size*0.05, abs(uv.y - 0.5));
 }
 
 mat2 rotate2D(float angle)
@@ -39,17 +44,6 @@ float smoothMin(float a, float b, float softness)
 {
     float h = smootherstep(-softness, softness, b - a);
     return mix(b, a, h);
-}
-
-//  Function from Iñigo Quiles
-//  https://www.shadertoy.com/view/MsS3Wc
-vec3 hsv2rgb( in vec3 c ){
-    vec3 rgb = clamp(abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),
-                             6.0)-3.0)-1.0,
-                     0.0,
-                     1.0 );
-    rgb = rgb*rgb*(3.0-2.0*rgb);
-    return c.z * mix(vec3(1.0), rgb, c.y);
 }
 
 
@@ -73,17 +67,15 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     vec2 warpedUv = rotate2D(curl*centerWeight)*uv;
     warpedUv *= smoothMin(3.0, 1.0 + inwardPull*centerWeight, 0.2);
 
-
-    float warpedGrid = grid(warpedUv, 1.0);
+    float horizontalGrid = horizontalLine(warpedUv, 1.0);
+    float verticalGrid = verticalLine(warpedUv, 1.0);
     
     /*
         Coloring
     */
     
-    vec3 HSV = vec3(0.0, 0.0, 0.0);
-    HSV[0] = 0.0;
-    HSV[1] = 0.0;
-    HSV[2] =  warpedGrid ;
-    vec3 color = hsv2rgb(HSV);
+    vec3 color = vec3(1.0);
+    color = mix(color, vec3(1.0, 0.0, 0.0), horizontalGrid);
+    color = mix(color, vec3(0.0, 1.0, 0.0), verticalGrid);
     fragColor = vec4(color, 1.0);
 }
