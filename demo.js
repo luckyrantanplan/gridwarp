@@ -1,9 +1,12 @@
+// Adaptive seed grid.
 const DEFAULT_TIME = 16.0;
 const MAX_CONTOUR_CELL_SIZE = 8;
 const MIN_CONTOUR_CELL_SIZE = 3;
 const CURVATURE_ERROR_THRESHOLD = 0.02;
 const MAX_ADAPTIVE_DEPTH = 3;
 const GRID_OFFSET = 0.5;
+
+// Contour tracing.
 const STROKE_WIDTH = 2.2;
 const FIELD_EPSILON = 0.75;
 const MIN_GRADIENT_NORM = 1e-4;
@@ -19,6 +22,8 @@ const MIN_LOOP_ARC_LENGTH = 40;
 const SEED_DEDUP_DISTANCE = 4;
 const VISITED_BUCKET_SIZE = 18;
 const VISITED_SEED_DISTANCE = 10;
+
+// SVG output and UI formatting.
 const SAMPLE_KEY_DIGITS = 4;
 const PATH_DECIMALS = 2;
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -118,7 +123,9 @@ function forwardWarp(point, time) {
   };
 }
 
-function screenToP(x, y, width, height) {
+// The demo moves between three spaces:
+// screen pixels -> unwarped plane coordinates -> warped coordinates whose level sets form the grid.
+function screenToPlanePoint(x, y, width, height) {
   const scale = height / 10;
   return {
     x: (x - width * 0.5) / scale,
@@ -162,10 +169,10 @@ function lineOffsets(limit) {
   return values;
 }
 
-function createWarpSampler(width, height, time) {
+function createWarpFieldSampler(width, height, time) {
   const cache = new Map();
 
-  return function sampleWarpNode(screenX, screenY) {
+  return function sampleWarpField(screenX, screenY) {
     const clampedX = clamp(screenX, 0, width);
     const clampedY = clamp(screenY, 0, height);
     const key = sampleKey(clampedX, clampedY);
@@ -173,17 +180,17 @@ function createWarpSampler(width, height, time) {
       return cache.get(key);
     }
 
-    const point = screenToP(clampedX, clampedY, width, height);
+    const point = screenToPlanePoint(clampedX, clampedY, width, height);
     const warped = forwardWarp(point, time);
-    const node = {
+    const sample = {
       screenX: clampedX,
       screenY: clampedY,
-      qx: warped.x,
-      qy: warped.y,
+      warpedX: warped.x,
+      warpedY: warped.y,
     };
 
-    cache.set(key, node);
-    return node;
+    cache.set(key, sample);
+    return sample;
   };
 }
 
@@ -198,7 +205,7 @@ function coordinateAxis(length, cellSize) {
   return coordinates;
 }
 
-function buildWarpGrid(xCoords, yCoords, sampleWarpNode) {
+function buildWarpGrid(xCoords, yCoords, sampleWarpField) {
   const columns = xCoords.length - 1;
   const rows = yCoords.length - 1;
   const nodes = [];
@@ -208,7 +215,7 @@ function buildWarpGrid(xCoords, yCoords, sampleWarpNode) {
     const screenY = yCoords[row];
 
     for (let column = 0; column <= columns; column += 1) {
-      currentRow.push(sampleWarpNode(xCoords[column], screenY));
+      currentRow.push(sampleWarpField(xCoords[column], screenY));
     }
 
     nodes.push(currentRow);
@@ -269,37 +276,37 @@ function pushTriangleSegments(segments, nodeA, valueA, nodeB, valueB, nodeC, val
   }
 }
 
-function axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, axisKey) {
+function axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, warpedAxis) {
   return Math.max(
-    Math.abs(center[axisKey] - 0.25 * (topLeft[axisKey] + topRight[axisKey] + bottomRight[axisKey] + bottomLeft[axisKey])),
-    Math.abs(topMid[axisKey] - 0.5 * (topLeft[axisKey] + topRight[axisKey])),
-    Math.abs(rightMid[axisKey] - 0.5 * (topRight[axisKey] + bottomRight[axisKey])),
-    Math.abs(bottomMid[axisKey] - 0.5 * (bottomLeft[axisKey] + bottomRight[axisKey])),
-    Math.abs(leftMid[axisKey] - 0.5 * (topLeft[axisKey] + bottomLeft[axisKey])),
+    Math.abs(center[warpedAxis] - 0.25 * (topLeft[warpedAxis] + topRight[warpedAxis] + bottomRight[warpedAxis] + bottomLeft[warpedAxis])),
+    Math.abs(topMid[warpedAxis] - 0.5 * (topLeft[warpedAxis] + topRight[warpedAxis])),
+    Math.abs(rightMid[warpedAxis] - 0.5 * (topRight[warpedAxis] + bottomRight[warpedAxis])),
+    Math.abs(bottomMid[warpedAxis] - 0.5 * (bottomLeft[warpedAxis] + bottomRight[warpedAxis])),
+    Math.abs(leftMid[warpedAxis] - 0.5 * (topLeft[warpedAxis] + bottomLeft[warpedAxis])),
   );
 }
 
-function cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNode) {
+function cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpField) {
   const midX = 0.5 * (topLeft.screenX + topRight.screenX);
   const midY = 0.5 * (topLeft.screenY + bottomLeft.screenY);
-  const topMid = sampleWarpNode(midX, topLeft.screenY);
-  const rightMid = sampleWarpNode(topRight.screenX, midY);
-  const bottomMid = sampleWarpNode(midX, bottomLeft.screenY);
-  const leftMid = sampleWarpNode(topLeft.screenX, midY);
-  const center = sampleWarpNode(midX, midY);
+  const topMid = sampleWarpField(midX, topLeft.screenY);
+  const rightMid = sampleWarpField(topRight.screenX, midY);
+  const bottomMid = sampleWarpField(midX, bottomLeft.screenY);
+  const leftMid = sampleWarpField(topLeft.screenX, midY);
+  const center = sampleWarpField(midX, midY);
 
   return Math.max(
-    axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qx"),
-    axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qy"),
+    axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "warpedX"),
+    axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "warpedY"),
   );
 }
 
-function buildAdaptiveAxes(width, height, sampleWarpNode) {
+function buildAdaptiveAxes(width, height, sampleWarpField) {
   let xCoords = coordinateAxis(width, MAX_CONTOUR_CELL_SIZE);
   let yCoords = coordinateAxis(height, MAX_CONTOUR_CELL_SIZE);
 
   for (let depth = 0; depth < MAX_ADAPTIVE_DEPTH; depth += 1) {
-    const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpNode);
+    const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpField);
     const nextX = new Set(xCoords);
     const nextY = new Set(yCoords);
     let refined = false;
@@ -317,7 +324,7 @@ function buildAdaptiveAxes(width, height, sampleWarpNode) {
           continue;
         }
 
-        if (cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNode) <= CURVATURE_ERROR_THRESHOLD) {
+        if (cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpField) <= CURVATURE_ERROR_THRESHOLD) {
           continue;
         }
 
@@ -338,7 +345,7 @@ function buildAdaptiveAxes(width, height, sampleWarpNode) {
   return { xCoords, yCoords };
 }
 
-function buildSegmentsForLevel(offset, axisKey, warpGrid) {
+function buildSegmentsForLevel(offset, warpedAxis, warpGrid) {
   const segments = [];
 
   for (let row = 0; row < warpGrid.rows; row += 1) {
@@ -351,20 +358,20 @@ function buildSegmentsForLevel(offset, axisKey, warpGrid) {
       pushTriangleSegments(
         segments,
         topLeft,
-        topLeft[axisKey] - offset,
+        topLeft[warpedAxis] - offset,
         topRight,
-        topRight[axisKey] - offset,
+        topRight[warpedAxis] - offset,
         bottomRight,
-        bottomRight[axisKey] - offset,
+        bottomRight[warpedAxis] - offset,
       );
       pushTriangleSegments(
         segments,
         topLeft,
-        topLeft[axisKey] - offset,
+        topLeft[warpedAxis] - offset,
         bottomRight,
-        bottomRight[axisKey] - offset,
+        bottomRight[warpedAxis] - offset,
         bottomLeft,
-        bottomLeft[axisKey] - offset,
+        bottomLeft[warpedAxis] - offset,
       );
     }
   }
@@ -429,40 +436,40 @@ function createPointIndex(bucketSize) {
   };
 }
 
-function createFieldContext(width, height, sampleWarpNode) {
-  function axisValue(axisKey, x, y) {
-    return sampleWarpNode(clamp(x, 0, width), clamp(y, 0, height))[axisKey];
+function createFieldContext(width, height, sampleWarpField) {
+  function warpedAxisValue(warpedAxis, x, y) {
+    return sampleWarpField(clamp(x, 0, width), clamp(y, 0, height))[warpedAxis];
   }
 
   return {
     width,
     height,
-    value(axisKey, offset, x, y) {
-      return axisValue(axisKey, x, y) - offset;
+    value(warpedAxis, offset, x, y) {
+      return warpedAxisValue(warpedAxis, x, y) - offset;
     },
-    gradient(axisKey, offset, x, y) {
+    gradient(warpedAxis, offset, x, y) {
       const x0 = clamp(x - FIELD_EPSILON, 0, width);
       const x1 = clamp(x + FIELD_EPSILON, 0, width);
       const y0 = clamp(y - FIELD_EPSILON, 0, height);
       const y1 = clamp(y + FIELD_EPSILON, 0, height);
-      const gx = (this.value(axisKey, offset, x1, y) - this.value(axisKey, offset, x0, y)) / Math.max(1e-6, x1 - x0);
-      const gy = (this.value(axisKey, offset, x, y1) - this.value(axisKey, offset, x, y0)) / Math.max(1e-6, y1 - y0);
+      const gx = (this.value(warpedAxis, offset, x1, y) - this.value(warpedAxis, offset, x0, y)) / Math.max(1e-6, x1 - x0);
+      const gy = (this.value(warpedAxis, offset, x, y1) - this.value(warpedAxis, offset, x, y0)) / Math.max(1e-6, y1 - y0);
       return { x: gx, y: gy };
     },
   };
 }
 
-function projectToContour(field, axisKey, offset, point) {
+function projectToContour(field, warpedAxis, offset, point) {
   let x = point.x;
   let y = point.y;
 
   for (let iteration = 0; iteration < MAX_PROJECTION_ITERATIONS; iteration += 1) {
-    const value = field.value(axisKey, offset, x, y);
+    const value = field.value(warpedAxis, offset, x, y);
     if (Math.abs(value) < NEWTON_TOLERANCE) {
       return { x, y };
     }
 
-    const gradient = field.gradient(axisKey, offset, x, y);
+    const gradient = field.gradient(warpedAxis, offset, x, y);
     const normSquared = gradient.x * gradient.x + gradient.y * gradient.y;
     if (normSquared < MIN_GRADIENT_NORM * MIN_GRADIENT_NORM) {
       return null;
@@ -472,7 +479,7 @@ function projectToContour(field, axisKey, offset, point) {
     y = clamp(y - value * gradient.y / normSquared, 0, field.height);
   }
 
-  return Math.abs(field.value(axisKey, offset, x, y)) < NEWTON_TOLERANCE * 4 ? { x, y } : null;
+  return Math.abs(field.value(warpedAxis, offset, x, y)) < NEWTON_TOLERANCE * 4 ? { x, y } : null;
 }
 
 function tangentFromGradient(gradient, previousTangent) {
@@ -495,7 +502,9 @@ function isOnBoundary(point, field) {
     || point.y >= field.height - 0.5;
 }
 
-function traceDirection(field, axisKey, offset, seedSample, direction) {
+// Follow one contour branch with midpoint predictor-corrector continuation.
+// Predict along the tangent, project back onto f(x, y) = 0, and shrink steps when turning becomes too sharp.
+function traceDirection(field, warpedAxis, offset, seedSample, direction) {
   const seedDirectionTangent = {
     x: seedSample.tangent.x * direction,
     y: seedSample.tangent.y * direction,
@@ -518,13 +527,13 @@ function traceDirection(field, axisKey, offset, seedSample, direction) {
         x: current.x + current.tangent.x * localStep * 0.5,
         y: current.y + current.tangent.y * localStep * 0.5,
       };
-      const projectedMidpoint = projectToContour(field, axisKey, offset, midpointGuess);
+      const projectedMidpoint = projectToContour(field, warpedAxis, offset, midpointGuess);
       if (!projectedMidpoint) {
         localStep *= 0.5;
         continue;
       }
 
-      const midpointGradient = field.gradient(axisKey, offset, projectedMidpoint.x, projectedMidpoint.y);
+      const midpointGradient = field.gradient(warpedAxis, offset, projectedMidpoint.x, projectedMidpoint.y);
       if (Math.hypot(midpointGradient.x, midpointGradient.y) < MIN_GRADIENT_NORM) {
         localStep *= 0.5;
         continue;
@@ -540,13 +549,13 @@ function traceDirection(field, axisKey, offset, seedSample, direction) {
         x: current.x + midpointTangent.x * localStep,
         y: current.y + midpointTangent.y * localStep,
       };
-      const projected = projectToContour(field, axisKey, offset, predicted);
+      const projected = projectToContour(field, warpedAxis, offset, predicted);
       if (!projected) {
         localStep *= 0.5;
         continue;
       }
 
-      const gradient = field.gradient(axisKey, offset, projected.x, projected.y);
+      const gradient = field.gradient(warpedAxis, offset, projected.x, projected.y);
       if (Math.hypot(gradient.x, gradient.y) < MIN_GRADIENT_NORM) {
         localStep *= 0.5;
         continue;
@@ -599,13 +608,13 @@ function traceDirection(field, axisKey, offset, seedSample, direction) {
   return { samples, closed: false };
 }
 
-function traceContourComponent(field, axisKey, offset, seed) {
-  const projectedSeed = projectToContour(field, axisKey, offset, seed);
+function traceContourComponent(field, warpedAxis, offset, seed) {
+  const projectedSeed = projectToContour(field, warpedAxis, offset, seed);
   if (!projectedSeed) {
     return null;
   }
 
-  const seedGradient = field.gradient(axisKey, offset, projectedSeed.x, projectedSeed.y);
+  const seedGradient = field.gradient(warpedAxis, offset, projectedSeed.x, projectedSeed.y);
   if (Math.hypot(seedGradient.x, seedGradient.y) < MIN_GRADIENT_NORM) {
     return null;
   }
@@ -620,7 +629,7 @@ function traceContourComponent(field, axisKey, offset, seed) {
     y: projectedSeed.y,
     tangent: seedTangent,
   };
-  const forward = traceDirection(field, axisKey, offset, seedSample, 1);
+  const forward = traceDirection(field, warpedAxis, offset, seedSample, 1);
   if (forward.closed) {
     return {
       closed: true,
@@ -628,7 +637,7 @@ function traceContourComponent(field, axisKey, offset, seed) {
     };
   }
 
-  const backward = traceDirection(field, axisKey, offset, seedSample, -1);
+  const backward = traceDirection(field, warpedAxis, offset, seedSample, -1);
   if (backward.closed) {
     return {
       closed: true,
@@ -642,8 +651,8 @@ function traceContourComponent(field, axisKey, offset, seed) {
     : null;
 }
 
-function collectSeedCandidates(offset, axisKey, warpGrid) {
-  const segments = buildSegmentsForLevel(offset, axisKey, warpGrid);
+function collectSeedCandidates(offset, warpedAxis, warpGrid) {
+  const segments = buildSegmentsForLevel(offset, warpedAxis, warpGrid);
   const seedIndex = createPointIndex(SEED_DEDUP_DISTANCE * 2);
   const seeds = [];
 
@@ -688,7 +697,7 @@ function sampleTurnAngle(previousPoint, point, nextPoint) {
   return Math.acos(clamp(dot(incoming, outgoing), -1, 1));
 }
 
-function chooseClosedFitSeam(samples) {
+function chooseClosedPathSeam(samples) {
   if (samples.length < 3) {
     return 0;
   }
@@ -712,33 +721,26 @@ function chooseClosedFitSeam(samples) {
   return bestIndex;
 }
 
-function createWorkingSamples(component) {
+function preparePathSamples(component) {
   if (!component.closed) {
-    return {
-      samples: component.samples,
-      closed: false,
-    };
+    return component.samples;
   }
 
-  const seamIndex = chooseClosedFitSeam(component.samples);
+  const seamIndex = chooseClosedPathSeam(component.samples);
   const rotated = rotateSamples(component.samples, seamIndex);
   const first = rotated[0];
-  return {
-    samples: [
-      ...rotated,
-      {
-        x: first.x,
-        y: first.y,
-        tangent: { x: first.tangent.x, y: first.tangent.y },
-      },
-    ],
-    closed: true,
-  };
+  return [
+    ...rotated,
+    {
+      x: first.x,
+      y: first.y,
+      tangent: { x: first.tangent.x, y: first.tangent.y },
+    },
+  ];
 }
 
 function createPathData(component) {
-  const working = createWorkingSamples(component);
-  const { samples } = working;
+  const samples = preparePathSamples(component);
   if (samples.length < 2) {
     return "";
   }
@@ -782,9 +784,9 @@ function createPathElement(component, stroke) {
   return path;
 }
 
-function appendContourFamily(group, offsets, axisKey, stroke, warpGrid, field) {
+function appendContourFamily(group, offsets, warpedAxis, stroke, warpGrid, field) {
   for (const offset of offsets) {
-    const seeds = collectSeedCandidates(offset, axisKey, warpGrid);
+    const seeds = collectSeedCandidates(offset, warpedAxis, warpGrid);
     const visitedSeeds = createPointIndex(VISITED_BUCKET_SIZE);
 
     for (const seed of seeds) {
@@ -792,7 +794,7 @@ function appendContourFamily(group, offsets, axisKey, stroke, warpGrid, field) {
         continue;
       }
 
-      const component = traceContourComponent(field, axisKey, offset, seed);
+      const component = traceContourComponent(field, warpedAxis, offset, seed);
       if (!component) {
         continue;
       }
@@ -843,10 +845,10 @@ function render() {
   const stage = scene.parentElement;
   const width = stage.clientWidth;
   const height = stage.clientHeight;
-  const sampleWarpNode = createWarpSampler(width, height, currentTime);
-  const field = createFieldContext(width, height, sampleWarpNode);
-  const { xCoords, yCoords } = buildAdaptiveAxes(width, height, sampleWarpNode);
-  const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpNode);
+  const sampleWarpField = createWarpFieldSampler(width, height, currentTime);
+  const field = createFieldContext(width, height, sampleWarpField);
+  const { xCoords, yCoords } = buildAdaptiveAxes(width, height, sampleWarpField);
+  const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpField);
 
   scene.setAttribute("viewBox", `0 0 ${width} ${height}`);
   scene.replaceChildren();
@@ -856,8 +858,8 @@ function render() {
   const horizontalGroup = document.createElementNS(SVG_NS, "g");
   const verticalGroup = document.createElementNS(SVG_NS, "g");
 
-  appendContourFamily(horizontalGroup, offsets, "qy", "#d4372f", warpGrid, field);
-  appendContourFamily(verticalGroup, offsets, "qx", "#148a45", warpGrid, field);
+  appendContourFamily(horizontalGroup, offsets, "warpedY", "#d4372f", warpGrid, field);
+  appendContourFamily(verticalGroup, offsets, "warpedX", "#148a45", warpGrid, field);
 
   const minCellSize = Math.min(minAxisStep(xCoords), minAxisStep(yCoords));
 
