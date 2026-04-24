@@ -16,13 +16,6 @@ uniform float     iSampleRate;           // sound sample rate (i.e., 44100)
                 
 
 */
-#define PI 3.14159265358
-
-float smoothmix(float a, float b, float x)
-{
-    return (1.0-smoothstep(0.0, 1.0, x))*a + smoothstep(0.0, 1.0, x)*b;
-}
-
 float grid(in vec2 uv, in float size)
 {
     uv = fract(uv);
@@ -36,63 +29,16 @@ mat2 rotate2D(float angle)
                 sin(angle), cos(angle));
 }
 
-mat2 scale2D(float scalar)
+float smootherstep(float edge0, float edge1, float x)
 {
-    return mat2(scalar, 0.0,
-                0.0, scalar);
+    x = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
 }
 
 float smoothMin(float a, float b, float softness)
 {
-    float h = clamp(0.5 + 0.5*(b - a)/softness, 0.0, 1.0);
-    return mix(b, a, h) - softness*h*(1.0 - h);
-}
-
-float random(float x)
-{
-    return fract(439029.0*sin(x));
-}
-
-float random(vec2 uv)
-{
-    return fract(439029.0*sin(dot(uv, vec2(85.3876, 9.38532))));
-}
-
-vec2 randomGradientVec(vec2 uv)
-{
-    float angle = 2.0*PI*random(uv);
-    return vec2(cos(angle), sin(angle));
-}
-
-float noise(in vec2 uv, in float sampleNum)
-{
-    /*
-        Creates gradients at sample points
-        
-        Quadrants 1, 2, 3, 4 correspond to letters d, c, a, b
-    */
-    vec2 uv_i = floor(uv*sampleNum);
-    vec2 uv_f = fract(uv*sampleNum);
-    float time_i = floor(iTime);
-    float time_f = fract(iTime);
-    
-    vec2 gradA = randomGradientVec(uv_i);
-    vec2 gradB = randomGradientVec(uv_i + vec2(1.0, 0.0));
-    vec2 gradC = randomGradientVec(uv_i + vec2(0.0, 1.0));
-    vec2 gradD = randomGradientVec(uv_i + vec2(1.0, 1.0));
-    
-    /*
-        Dot product and interpolation to get noise value at each pixel
-    */
-    float valA = dot(uv_f, gradA);
-    float valB = dot(uv_f - vec2(1.0, 0.0), gradB);
-    float valC = dot(uv_f - vec2(0.0, 1.0), gradC);
-    float valD = dot(uv_f - vec2(1.0, 1.0), gradD);
-    float valAB = smoothmix(valA, valB, uv_f.x);
-    float valBC = smoothmix(valC, valD, uv_f.x);
-    float val = 0.8*smoothmix(valAB, valBC, uv_f.y) + 0.5;
-    
-    return val;
+    float h = smootherstep(-softness, softness, b - a);
+    return mix(b, a, h);
 }
 
 //  Function from Iñigo Quiles
