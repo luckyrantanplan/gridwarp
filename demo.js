@@ -5,8 +5,22 @@ const CURVATURE_ERROR_THRESHOLD = 0.02;
 const MAX_ADAPTIVE_DEPTH = 3;
 const GRID_OFFSET = 0.5;
 const STROKE_WIDTH = 2.2;
-const MIN_BRANCH_POINTS = 6;
-const VERTEX_MERGE_TOLERANCE = 1.25;
+const FIELD_EPSILON = 0.75;
+const MIN_GRADIENT_NORM = 1e-4;
+const NEWTON_TOLERANCE = 1e-3;
+const MAX_PROJECTION_ITERATIONS = 10;
+const INITIAL_TRACE_STEP = 6;
+const MAX_TRACE_STEP = 16;
+const MIN_TRACE_STEP = 0.35;
+const MAX_TRACE_TURN = Math.PI / 3;
+const MAX_TRACE_STEPS = 4000;
+const LOOP_CLOSURE_DISTANCE = 5;
+const MIN_LOOP_ARC_LENGTH = 40;
+const SEED_DEDUP_DISTANCE = 4;
+const VISITED_BUCKET_SIZE = 18;
+const VISITED_SEED_DISTANCE = 10;
+const SAMPLE_KEY_DIGITS = 4;
+const PATH_DECIMALS = 2;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const scene = document.getElementById("scene");
@@ -32,6 +46,37 @@ function smootherstep(edge0, edge1, x) {
 function smoothMin(a, b, softness) {
   const h = smootherstep(-softness, softness, b - a);
   return mix(b, a, h);
+}
+
+function distance(pointA, pointB) {
+  return Math.hypot(pointA.x - pointB.x, pointA.y - pointB.y);
+}
+
+function dot(vectorA, vectorB) {
+  return vectorA.x * vectorB.x + vectorA.y * vectorB.y;
+}
+
+function normalize(vector) {
+  const length = Math.hypot(vector.x, vector.y);
+  if (length < 1e-9) {
+    return null;
+  }
+
+  return {
+    x: vector.x / length,
+    y: vector.y / length,
+  };
+}
+
+function reverseSamples(samples) {
+  return samples.slice().reverse().map((sample) => ({
+    x: sample.x,
+    y: sample.y,
+    tangent: {
+      x: -sample.tangent.x,
+      y: -sample.tangent.y,
+    },
+  }));
 }
 
 function rotate(point, angle) {
@@ -70,14 +115,6 @@ function forwardWarp(point, time) {
   };
 }
 
-function pToScreen(point, width, height) {
-  const scale = height / 10;
-  return {
-    x: width * 0.5 + point.x * scale,
-    y: height * 0.5 - point.y * scale,
-  };
-}
-
 function screenToP(x, y, width, height) {
   const scale = height / 10;
   return {
@@ -94,7 +131,7 @@ function visibleBounds(width, height) {
 }
 
 function sampleKey(x, y) {
-  return `${x.toFixed(4)},${y.toFixed(4)}`;
+  return `${x.toFixed(SAMPLE_KEY_DIGITS)},${y.toFixed(SAMPLE_KEY_DIGITS)}`;
 }
 
 function maxWarpedRadius(width, height, time) {
@@ -126,16 +163,18 @@ function createWarpSampler(width, height, time) {
   const cache = new Map();
 
   return function sampleWarpNode(screenX, screenY) {
-    const key = sampleKey(screenX, screenY);
+    const clampedX = clamp(screenX, 0, width);
+    const clampedY = clamp(screenY, 0, height);
+    const key = sampleKey(clampedX, clampedY);
     if (cache.has(key)) {
       return cache.get(key);
     }
 
-    const point = screenToP(screenX, screenY, width, height);
+    const point = screenToP(clampedX, clampedY, width, height);
     const warped = forwardWarp(point, time);
     const node = {
-      screenX,
-      screenY,
+      screenX: clampedX,
+      screenY: clampedY,
       qx: warped.x,
       qy: warped.y,
     };
@@ -166,8 +205,7 @@ function buildWarpGrid(xCoords, yCoords, sampleWarpNode) {
     const screenY = yCoords[row];
 
     for (let column = 0; column <= columns; column += 1) {
-      const screenX = xCoords[column];
-      currentRow.push(sampleWarpNode(screenX, screenY));
+      currentRow.push(sampleWarpNode(xCoords[column], screenY));
     }
 
     nodes.push(currentRow);
@@ -185,7 +223,6 @@ function interpolateZero(nodeA, valueA, nodeB, valueB) {
 }
 
 function pushTriangleSegments(segments, nodeA, valueA, nodeB, valueB, nodeC, valueC) {
-  // Each triangle contributes at most one contour segment for a single grid level.
   const candidates = [
     [nodeA, valueA, nodeB, valueB],
     [nodeB, valueB, nodeC, valueC],
@@ -248,12 +285,10 @@ function cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNod
   const leftMid = sampleWarpNode(topLeft.screenX, midY);
   const center = sampleWarpNode(midX, midY);
 
-  return {
-    maxError: Math.max(
-      axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qx"),
-      axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qy"),
-    ),
-  };
+  return Math.max(
+    axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qx"),
+    axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qy"),
+  );
 }
 
 function buildAdaptiveAxes(width, height, sampleWarpNode) {
@@ -279,8 +314,7 @@ function buildAdaptiveAxes(width, height, sampleWarpNode) {
           continue;
         }
 
-        const metrics = cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNode);
-        if (metrics.maxError <= CURVATURE_ERROR_THRESHOLD) {
+        if (cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNode) <= CURVATURE_ERROR_THRESHOLD) {
           continue;
         }
 
@@ -301,8 +335,7 @@ function buildAdaptiveAxes(width, height, sampleWarpNode) {
   return { xCoords, yCoords };
 }
 
-function buildSegmentsForOffset(offset, orientation, warpGrid) {
-  const axisKey = orientation === "horizontal" ? "qy" : "qx";
+function buildSegmentsForLevel(offset, axisKey, warpGrid) {
   const segments = [];
 
   for (let row = 0; row < warpGrid.rows; row += 1) {
@@ -336,149 +369,344 @@ function buildSegmentsForOffset(offset, orientation, warpGrid) {
   return segments;
 }
 
-function edgeKey(startKey, endKey) {
-  return startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
+function minAxisStep(coordinates) {
+  let minStep = Infinity;
+
+  for (let index = 1; index < coordinates.length; index += 1) {
+    minStep = Math.min(minStep, coordinates[index] - coordinates[index - 1]);
+  }
+
+  return minStep;
 }
 
-function traceSegments(segments) {
-  const vertices = new Map();
-  const edges = new Map();
-  const spatialBuckets = new Map();
-  let nextVertexId = 0;
+function createPointIndex(bucketSize) {
+  const buckets = new Map();
 
-  function ensureVertex(point) {
-    const bucketX = Math.round(point.x / VERTEX_MERGE_TOLERANCE);
-    const bucketY = Math.round(point.y / VERTEX_MERGE_TOLERANCE);
+  function baseBucket(point) {
+    return {
+      x: Math.floor(point.x / bucketSize),
+      y: Math.floor(point.y / bucketSize),
+    };
+  }
 
-    for (let dx = -1; dx <= 1; dx += 1) {
-      for (let dy = -1; dy <= 1; dy += 1) {
-        const bucketKey = `${bucketX + dx},${bucketY + dy}`;
-        const bucket = spatialBuckets.get(bucketKey);
+  function bucketKey(xBucket, yBucket) {
+    return `${xBucket},${yBucket}`;
+  }
 
-        if (!bucket) {
-          continue;
-        }
+  return {
+    hasNearby(point, maxDistance) {
+      const bucket = baseBucket(point);
+      for (let dx = -1; dx <= 1; dx += 1) {
+        for (let dy = -1; dy <= 1; dy += 1) {
+          const key = bucketKey(bucket.x + dx, bucket.y + dy);
+          const entries = buckets.get(key);
+          if (!entries) {
+            continue;
+          }
 
-        for (const key of bucket) {
-          const vertex = vertices.get(key);
-          if (Math.hypot(vertex.x - point.x, vertex.y - point.y) <= VERTEX_MERGE_TOLERANCE) {
-            return key;
+          for (const otherPoint of entries) {
+            if (distance(point, otherPoint) <= maxDistance) {
+              return true;
+            }
           }
         }
       }
-    }
 
-    const key = String(nextVertexId);
-    nextVertexId += 1;
-    vertices.set(key, { x: point.x, y: point.y, neighbors: [] });
+      return false;
+    },
+    addPoint(point) {
+      const bucket = baseBucket(point);
+      const key = bucketKey(bucket.x, bucket.y);
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+      }
 
-    const homeBucketKey = `${bucketX},${bucketY}`;
-    if (!spatialBuckets.has(homeBucketKey)) {
-      spatialBuckets.set(homeBucketKey, []);
-    }
+      buckets.get(key).push({ x: point.x, y: point.y });
+    },
+  };
+}
 
-    spatialBuckets.get(homeBucketKey).push(key);
-    return key;
+function createFieldContext(width, height, sampleWarpNode) {
+  function axisValue(axisKey, x, y) {
+    return sampleWarpNode(clamp(x, 0, width), clamp(y, 0, height))[axisKey];
   }
+
+  return {
+    width,
+    height,
+    value(axisKey, offset, x, y) {
+      return axisValue(axisKey, x, y) - offset;
+    },
+    gradient(axisKey, offset, x, y) {
+      const x0 = clamp(x - FIELD_EPSILON, 0, width);
+      const x1 = clamp(x + FIELD_EPSILON, 0, width);
+      const y0 = clamp(y - FIELD_EPSILON, 0, height);
+      const y1 = clamp(y + FIELD_EPSILON, 0, height);
+      const gx = (this.value(axisKey, offset, x1, y) - this.value(axisKey, offset, x0, y)) / Math.max(1e-6, x1 - x0);
+      const gy = (this.value(axisKey, offset, x, y1) - this.value(axisKey, offset, x, y0)) / Math.max(1e-6, y1 - y0);
+      return { x: gx, y: gy };
+    },
+  };
+}
+
+function projectToContour(field, axisKey, offset, point) {
+  let x = point.x;
+  let y = point.y;
+
+  for (let iteration = 0; iteration < MAX_PROJECTION_ITERATIONS; iteration += 1) {
+    const value = field.value(axisKey, offset, x, y);
+    if (Math.abs(value) < NEWTON_TOLERANCE) {
+      return { x, y };
+    }
+
+    const gradient = field.gradient(axisKey, offset, x, y);
+    const normSquared = gradient.x * gradient.x + gradient.y * gradient.y;
+    if (normSquared < MIN_GRADIENT_NORM * MIN_GRADIENT_NORM) {
+      return null;
+    }
+
+    x = clamp(x - value * gradient.x / normSquared, 0, field.width);
+    y = clamp(y - value * gradient.y / normSquared, 0, field.height);
+  }
+
+  return Math.abs(field.value(axisKey, offset, x, y)) < NEWTON_TOLERANCE * 4 ? { x, y } : null;
+}
+
+function tangentFromGradient(gradient, previousTangent) {
+  const tangent = normalize({ x: -gradient.y, y: gradient.x });
+  if (!tangent) {
+    return null;
+  }
+
+  if (previousTangent && dot(tangent, previousTangent) < 0) {
+    return { x: -tangent.x, y: -tangent.y };
+  }
+
+  return tangent;
+}
+
+function isOnBoundary(point, field) {
+  return point.x <= 0.5
+    || point.x >= field.width - 0.5
+    || point.y <= 0.5
+    || point.y >= field.height - 0.5;
+}
+
+function traceDirection(field, axisKey, offset, seedSample, direction) {
+  const seedDirectionTangent = {
+    x: seedSample.tangent.x * direction,
+    y: seedSample.tangent.y * direction,
+  };
+  let current = {
+    x: seedSample.x,
+    y: seedSample.y,
+    tangent: seedDirectionTangent,
+  };
+  let step = INITIAL_TRACE_STEP;
+  let arcLength = 0;
+  const samples = [];
+
+  for (let iteration = 0; iteration < MAX_TRACE_STEPS; iteration += 1) {
+    let localStep = step;
+    let accepted = null;
+
+    while (localStep >= MIN_TRACE_STEP) {
+      const predicted = {
+        x: current.x + current.tangent.x * localStep,
+        y: current.y + current.tangent.y * localStep,
+      };
+      const projected = projectToContour(field, axisKey, offset, predicted);
+      if (!projected) {
+        localStep *= 0.5;
+        continue;
+      }
+
+      const gradient = field.gradient(axisKey, offset, projected.x, projected.y);
+      if (Math.hypot(gradient.x, gradient.y) < MIN_GRADIENT_NORM) {
+        localStep *= 0.5;
+        continue;
+      }
+
+      const tangent = tangentFromGradient(gradient, current.tangent);
+      if (!tangent) {
+        localStep *= 0.5;
+        continue;
+      }
+
+      const advance = distance(current, projected);
+      const correction = distance(predicted, projected);
+      const turn = Math.acos(clamp(dot(current.tangent, tangent), -1, 1));
+      if (advance < MIN_TRACE_STEP * 0.25 || correction > localStep * 0.85 || turn > MAX_TRACE_TURN) {
+        localStep *= 0.5;
+        continue;
+      }
+
+      accepted = {
+        x: projected.x,
+        y: projected.y,
+        tangent,
+      };
+      step = correction < localStep * 0.2 && turn < 0.15
+        ? Math.min(localStep * 1.2, MAX_TRACE_STEP)
+        : localStep;
+      break;
+    }
+
+    if (!accepted) {
+      return { samples, closed: false };
+    }
+
+    arcLength += distance(current, accepted);
+    if (arcLength > MIN_LOOP_ARC_LENGTH
+        && distance(accepted, seedSample) < LOOP_CLOSURE_DISTANCE
+        && dot(accepted.tangent, seedDirectionTangent) > 0.5) {
+      return { samples, closed: true };
+    }
+
+    samples.push(accepted);
+    current = accepted;
+
+    if (isOnBoundary(current, field) && arcLength > INITIAL_TRACE_STEP) {
+      return { samples, closed: false };
+    }
+  }
+
+  return { samples, closed: false };
+}
+
+function traceContourComponent(field, axisKey, offset, seed) {
+  const projectedSeed = projectToContour(field, axisKey, offset, seed);
+  if (!projectedSeed) {
+    return null;
+  }
+
+  const seedGradient = field.gradient(axisKey, offset, projectedSeed.x, projectedSeed.y);
+  if (Math.hypot(seedGradient.x, seedGradient.y) < MIN_GRADIENT_NORM) {
+    return null;
+  }
+
+  const seedTangent = tangentFromGradient(seedGradient, null);
+  if (!seedTangent) {
+    return null;
+  }
+
+  const seedSample = {
+    x: projectedSeed.x,
+    y: projectedSeed.y,
+    tangent: seedTangent,
+  };
+  const forward = traceDirection(field, axisKey, offset, seedSample, 1);
+  if (forward.closed) {
+    return {
+      closed: true,
+      samples: [seedSample, ...forward.samples],
+    };
+  }
+
+  const backward = traceDirection(field, axisKey, offset, seedSample, -1);
+  if (backward.closed) {
+    return {
+      closed: true,
+      samples: [seedSample, ...backward.samples],
+    };
+  }
+
+  const samples = [...reverseSamples(backward.samples), seedSample, ...forward.samples];
+  return samples.length > 1
+    ? { closed: false, samples }
+    : null;
+}
+
+function collectSeedCandidates(offset, axisKey, warpGrid) {
+  const segments = buildSegmentsForLevel(offset, axisKey, warpGrid);
+  const seedIndex = createPointIndex(SEED_DEDUP_DISTANCE * 2);
+  const seeds = [];
 
   for (const [startPoint, endPoint] of segments) {
-    const startKey = ensureVertex(startPoint);
-    const endKey = ensureVertex(endPoint);
-    const key = edgeKey(startKey, endKey);
-
-    if (edges.has(key) || startKey === endKey) {
+    const seed = {
+      x: 0.5 * (startPoint.x + endPoint.x),
+      y: 0.5 * (startPoint.y + endPoint.y),
+    };
+    if (seedIndex.hasNearby(seed, SEED_DEDUP_DISTANCE)) {
       continue;
     }
 
-    edges.set(key, { startKey, endKey, used: false });
-    vertices.get(startKey).neighbors.push(endKey);
-    vertices.get(endKey).neighbors.push(startKey);
+    seedIndex.addPoint(seed);
+    seeds.push(seed);
   }
 
-  const polylines = [];
-
-  function consumePath(startKey) {
-    // Walk the contour graph edge-by-edge to rebuild ordered SVG polyline points.
-    const points = [];
-    let previousKey = null;
-    let currentKey = startKey;
-
-    while (currentKey) {
-      const currentVertex = vertices.get(currentKey);
-      points.push(`${currentVertex.x.toFixed(2)},${currentVertex.y.toFixed(2)}`);
-
-      const nextKey = currentVertex.neighbors.find((neighborKey) => {
-        const key = edgeKey(currentKey, neighborKey);
-        return !edges.get(key).used && neighborKey !== previousKey;
-      });
-
-      if (!nextKey) {
-        break;
-      }
-
-      edges.get(edgeKey(currentKey, nextKey)).used = true;
-      previousKey = currentKey;
-      currentKey = nextKey;
-
-      if (currentKey === startKey) {
-        const startVertex = vertices.get(startKey);
-        points.push(`${startVertex.x.toFixed(2)},${startVertex.y.toFixed(2)}`);
-        break;
-      }
-    }
-
-    return points;
-  }
-
-  for (const [key, vertex] of vertices) {
-    if (vertex.neighbors.length !== 1) {
-      continue;
-    }
-
-    const neighborKey = vertex.neighbors[0];
-    if (edges.get(edgeKey(key, neighborKey)).used) {
-      continue;
-    }
-
-    const points = consumePath(key);
-    if (points.length >= MIN_BRANCH_POINTS) {
-      polylines.push(points.join(" "));
-    }
-  }
-
-  for (const edge of edges.values()) {
-    if (edge.used) {
-      continue;
-    }
-
-    const points = consumePath(edge.startKey);
-    if (points.length >= MIN_BRANCH_POINTS) {
-      polylines.push(points.join(" "));
-    }
-  }
-
-  return polylines;
+  return seeds;
 }
 
-function createPolyline(points, stroke) {
-  const polyline = document.createElementNS(SVG_NS, "polyline");
-  polyline.setAttribute("fill", "none");
-  polyline.setAttribute("stroke", stroke);
-  polyline.setAttribute("stroke-width", String(STROKE_WIDTH));
-  polyline.setAttribute("stroke-linecap", "round");
-  polyline.setAttribute("stroke-linejoin", "round");
-  polyline.setAttribute("vector-effect", "non-scaling-stroke");
-  polyline.setAttribute("points", points);
-  return polyline;
+function formatNumber(value) {
+  return value.toFixed(PATH_DECIMALS);
 }
 
-function appendContourFamily(group, offsets, orientation, stroke, warpGrid) {
+function createPathData(component) {
+  const { samples, closed } = component;
+  if (samples.length < 2) {
+    return "";
+  }
+
+  let pathData = `M ${formatNumber(samples[0].x)} ${formatNumber(samples[0].y)}`;
+  const segmentCount = closed ? samples.length : samples.length - 1;
+
+  for (let index = 0; index < segmentCount; index += 1) {
+    const start = samples[index];
+    const end = samples[(index + 1) % samples.length];
+    const segmentLength = distance(start, end);
+    const handleLength = segmentLength / 3;
+    const control1 = {
+      x: start.x + start.tangent.x * handleLength,
+      y: start.y + start.tangent.y * handleLength,
+    };
+    const control2 = {
+      x: end.x - end.tangent.x * handleLength,
+      y: end.y - end.tangent.y * handleLength,
+    };
+    pathData += ` C ${formatNumber(control1.x)} ${formatNumber(control1.y)} ${formatNumber(control2.x)} ${formatNumber(control2.y)} ${formatNumber(end.x)} ${formatNumber(end.y)}`;
+  }
+
+  if (closed) {
+    pathData += " Z";
+  }
+
+  return pathData;
+}
+
+function createPathElement(component, stroke) {
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", stroke);
+  path.setAttribute("stroke-width", String(STROKE_WIDTH));
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("vector-effect", "non-scaling-stroke");
+  path.dataset.closed = String(component.closed);
+  path.setAttribute("d", createPathData(component));
+  return path;
+}
+
+function appendContourFamily(group, offsets, axisKey, stroke, warpGrid, field) {
   for (const offset of offsets) {
-    const segments = buildSegmentsForOffset(offset, orientation, warpGrid);
-    const pointSets = traceSegments(segments);
+    const seeds = collectSeedCandidates(offset, axisKey, warpGrid);
+    const visitedSeeds = createPointIndex(VISITED_BUCKET_SIZE);
 
-    for (const points of pointSets) {
-      group.appendChild(createPolyline(points, stroke));
+    for (const seed of seeds) {
+      if (visitedSeeds.hasNearby(seed, VISITED_SEED_DISTANCE)) {
+        continue;
+      }
+
+      const component = traceContourComponent(field, axisKey, offset, seed);
+      if (!component) {
+        continue;
+      }
+
+      for (const sample of component.samples) {
+        visitedSeeds.addPoint(sample);
+      }
+
+      group.appendChild(createPathElement(component, stroke));
     }
   }
 }
@@ -488,9 +716,8 @@ function render() {
   const width = stage.clientWidth;
   const height = stage.clientHeight;
   const sampleWarpNode = createWarpSampler(width, height, currentTime);
+  const field = createFieldContext(width, height, sampleWarpNode);
   const { xCoords, yCoords } = buildAdaptiveAxes(width, height, sampleWarpNode);
-  // Sample the warped coordinate field on a screen-space lattice, then extract
-  // iso-lines where qx or qy land on half-integer grid coordinates.
   const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpNode);
 
   scene.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -501,21 +728,15 @@ function render() {
   const horizontalGroup = document.createElementNS(SVG_NS, "g");
   const verticalGroup = document.createElementNS(SVG_NS, "g");
 
-  appendContourFamily(horizontalGroup, offsets, "horizontal", "#d4372f", warpGrid);
-  appendContourFamily(verticalGroup, offsets, "vertical", "#148a45", warpGrid);
+  appendContourFamily(horizontalGroup, offsets, "qy", "#d4372f", warpGrid, field);
+  appendContourFamily(verticalGroup, offsets, "qx", "#148a45", warpGrid, field);
 
-  let minCellSize = Infinity;
-  for (let index = 1; index < xCoords.length; index += 1) {
-    minCellSize = Math.min(minCellSize, xCoords[index] - xCoords[index - 1]);
-  }
-  for (let index = 1; index < yCoords.length; index += 1) {
-    minCellSize = Math.min(minCellSize, yCoords[index] - yCoords[index - 1]);
-  }
+  const minCellSize = Math.min(minAxisStep(xCoords), minAxisStep(yCoords));
 
   scene.append(horizontalGroup, verticalGroup);
   timeValue.value = currentTime.toFixed(1);
   timeValue.textContent = currentTime.toFixed(1);
-  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsets.length} lines per axis · adaptive ${MAX_CONTOUR_CELL_SIZE}px to ${minCellSize.toFixed(1)}px`;
+  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsets.length} lines per axis · traced paths from adaptive ${MAX_CONTOUR_CELL_SIZE}px to ${minCellSize.toFixed(1)}px seeds`;
 }
 
 timeSlider.value = String(DEFAULT_TIME);
