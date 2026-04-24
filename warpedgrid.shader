@@ -28,6 +28,31 @@ float horizontalLine(in vec2 uv, in float size)
     return 1.0 - smoothstep(0.0, size*0.05, abs(uv.y - 0.5));
 }
 
+float distanceToSegment(in vec2 point, in vec2 startPoint, in vec2 endPoint)
+{
+    vec2 segment = endPoint - startPoint;
+    float segmentLengthSquared = dot(segment, segment);
+    float t = clamp(dot(point - startPoint, segment) / segmentLengthSquared, 0.0, 1.0);
+    vec2 projection = startPoint + t * segment;
+    return length(point - projection);
+}
+
+float segmentMask(in vec2 point, in vec2 startPoint, in vec2 endPoint, in float halfWidth)
+{
+    float distance = distanceToSegment(point, startPoint, endPoint);
+    float antialias = fwidth(distance);
+    return 1.0 - smoothstep(halfWidth, halfWidth + antialias, distance);
+}
+
+float triangleOutlineMask(in vec2 point, in vec2 pointA, in vec2 pointB, in vec2 pointC, in float halfWidth)
+{
+    float mask = 0.0;
+    mask = max(mask, segmentMask(point, pointA, pointB, halfWidth));
+    mask = max(mask, segmentMask(point, pointB, pointC, halfWidth));
+    mask = max(mask, segmentMask(point, pointC, pointA, halfWidth));
+    return mask;
+}
+
 mat2 rotate2D(float angle)
 {
     return mat2(cos(angle), -sin(angle),
@@ -69,6 +94,31 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 
     float horizontalGrid = horizontalLine(warpedUv, 1.0);
     float verticalGrid = verticalLine(warpedUv, 1.0);
+    float triangleMask = 0.0;
+
+    vec2 triangleA = vec2(-5.2, -1.8);
+    vec2 triangleB = vec2(4.8, -1.4);
+    vec2 triangleC = vec2(-0.2, 5.2);
+    float triangleHalfWidth = 0.06;
+    vec2 triangleSpacing = vec2(12.0, 10.0);
+
+    for (int row = -1; row <= 1; ++row)
+    {
+        for (int column = -1; column <= 2; ++column)
+        {
+            vec2 offset = vec2(float(column), float(row)) * triangleSpacing;
+            triangleMask = max(
+                triangleMask,
+                triangleOutlineMask(
+                    warpedUv,
+                    triangleA + offset,
+                    triangleB + offset,
+                    triangleC + offset,
+                    triangleHalfWidth
+                )
+            );
+        }
+    }
     
     /*
         Coloring
@@ -77,5 +127,6 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     vec3 color = vec3(1.0);
     color = mix(color, vec3(1.0, 0.0, 0.0), horizontalGrid);
     color = mix(color, vec3(0.0, 1.0, 0.0), verticalGrid);
+    color = mix(color, vec3(0.08, 0.2, 0.95), triangleMask);
     fragColor = vec4(color, 1.0);
 }
