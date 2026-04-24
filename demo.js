@@ -1,9 +1,12 @@
 const DEFAULT_TIME = 16.0;
 const MAX_CONTOUR_CELL_SIZE = 8;
 const MIN_CONTOUR_CELL_SIZE = 3;
+const CURVATURE_ERROR_THRESHOLD = 0.02;
+const MAX_ADAPTIVE_DEPTH = 3;
 const GRID_OFFSET = 0.5;
 const STROKE_WIDTH = 2.2;
 const MIN_BRANCH_POINTS = 6;
+const VERTEX_MERGE_TOLERANCE = 1.25;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const scene = document.getElementById("scene");
@@ -90,8 +93,8 @@ function visibleBounds(width, height) {
   };
 }
 
-function contourCellSize(time) {
-  return Math.max(MIN_CONTOUR_CELL_SIZE, MAX_CONTOUR_CELL_SIZE - 0.08 * time);
+function sampleKey(x, y) {
+  return `${x.toFixed(4)},${y.toFixed(4)}`;
 }
 
 function maxWarpedRadius(width, height, time) {
@@ -119,31 +122,58 @@ function lineOffsets(limit) {
   return values;
 }
 
-function buildWarpGrid(width, height, time, cellSize) {
-  const columns = Math.max(2, Math.ceil(width / cellSize));
-  const rows = Math.max(2, Math.ceil(height / cellSize));
+function createWarpSampler(width, height, time) {
+  const cache = new Map();
+
+  return function sampleWarpNode(screenX, screenY) {
+    const key = sampleKey(screenX, screenY);
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+
+    const point = screenToP(screenX, screenY, width, height);
+    const warped = forwardWarp(point, time);
+    const node = {
+      screenX,
+      screenY,
+      qx: warped.x,
+      qy: warped.y,
+    };
+
+    cache.set(key, node);
+    return node;
+  };
+}
+
+function coordinateAxis(length, cellSize) {
+  const steps = Math.max(2, Math.ceil(length / cellSize));
+  const coordinates = [];
+
+  for (let index = 0; index <= steps; index += 1) {
+    coordinates.push(length * index / steps);
+  }
+
+  return coordinates;
+}
+
+function buildWarpGrid(xCoords, yCoords, sampleWarpNode) {
+  const columns = xCoords.length - 1;
+  const rows = yCoords.length - 1;
   const nodes = [];
 
   for (let row = 0; row <= rows; row += 1) {
     const currentRow = [];
-    const screenY = height * row / rows;
+    const screenY = yCoords[row];
 
     for (let column = 0; column <= columns; column += 1) {
-      const screenX = width * column / columns;
-      const point = screenToP(screenX, screenY, width, height);
-      const warped = forwardWarp(point, time);
-      currentRow.push({
-        screenX,
-        screenY,
-        qx: warped.x,
-        qy: warped.y,
-      });
+      const screenX = xCoords[column];
+      currentRow.push(sampleWarpNode(screenX, screenY));
     }
 
     nodes.push(currentRow);
   }
 
-  return { columns, rows, nodes };
+  return { columns, rows, nodes, xCoords, yCoords };
 }
 
 function interpolateZero(nodeA, valueA, nodeB, valueB) {
@@ -199,6 +229,78 @@ function pushTriangleSegments(segments, nodeA, valueA, nodeB, valueB, nodeC, val
   }
 }
 
+function axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, axisKey) {
+  return Math.max(
+    Math.abs(center[axisKey] - 0.25 * (topLeft[axisKey] + topRight[axisKey] + bottomRight[axisKey] + bottomLeft[axisKey])),
+    Math.abs(topMid[axisKey] - 0.5 * (topLeft[axisKey] + topRight[axisKey])),
+    Math.abs(rightMid[axisKey] - 0.5 * (topRight[axisKey] + bottomRight[axisKey])),
+    Math.abs(bottomMid[axisKey] - 0.5 * (bottomLeft[axisKey] + bottomRight[axisKey])),
+    Math.abs(leftMid[axisKey] - 0.5 * (topLeft[axisKey] + bottomLeft[axisKey])),
+  );
+}
+
+function cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNode) {
+  const midX = 0.5 * (topLeft.screenX + topRight.screenX);
+  const midY = 0.5 * (topLeft.screenY + bottomLeft.screenY);
+  const topMid = sampleWarpNode(midX, topLeft.screenY);
+  const rightMid = sampleWarpNode(topRight.screenX, midY);
+  const bottomMid = sampleWarpNode(midX, bottomLeft.screenY);
+  const leftMid = sampleWarpNode(topLeft.screenX, midY);
+  const center = sampleWarpNode(midX, midY);
+
+  return {
+    maxError: Math.max(
+      axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qx"),
+      axisCurvatureError(topLeft, topRight, bottomRight, bottomLeft, topMid, rightMid, bottomMid, leftMid, center, "qy"),
+    ),
+  };
+}
+
+function buildAdaptiveAxes(width, height, sampleWarpNode) {
+  let xCoords = coordinateAxis(width, MAX_CONTOUR_CELL_SIZE);
+  let yCoords = coordinateAxis(height, MAX_CONTOUR_CELL_SIZE);
+
+  for (let depth = 0; depth < MAX_ADAPTIVE_DEPTH; depth += 1) {
+    const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpNode);
+    const nextX = new Set(xCoords);
+    const nextY = new Set(yCoords);
+    let refined = false;
+
+    for (let row = 0; row < warpGrid.rows; row += 1) {
+      for (let column = 0; column < warpGrid.columns; column += 1) {
+        const topLeft = warpGrid.nodes[row][column];
+        const topRight = warpGrid.nodes[row][column + 1];
+        const bottomRight = warpGrid.nodes[row + 1][column + 1];
+        const bottomLeft = warpGrid.nodes[row + 1][column];
+        const cellWidth = topRight.screenX - topLeft.screenX;
+        const cellHeight = bottomLeft.screenY - topLeft.screenY;
+
+        if (Math.max(cellWidth, cellHeight) * 0.5 < MIN_CONTOUR_CELL_SIZE) {
+          continue;
+        }
+
+        const metrics = cellCurvature(topLeft, topRight, bottomRight, bottomLeft, sampleWarpNode);
+        if (metrics.maxError <= CURVATURE_ERROR_THRESHOLD) {
+          continue;
+        }
+
+        nextX.add(0.5 * (topLeft.screenX + topRight.screenX));
+        nextY.add(0.5 * (topLeft.screenY + bottomLeft.screenY));
+        refined = true;
+      }
+    }
+
+    if (!refined) {
+      break;
+    }
+
+    xCoords = Array.from(nextX).sort((left, right) => left - right);
+    yCoords = Array.from(nextY).sort((left, right) => left - right);
+  }
+
+  return { xCoords, yCoords };
+}
+
 function buildSegmentsForOffset(offset, orientation, warpGrid) {
   const axisKey = orientation === "horizontal" ? "qy" : "qx";
   const segments = [];
@@ -234,10 +336,6 @@ function buildSegmentsForOffset(offset, orientation, warpGrid) {
   return segments;
 }
 
-function buildPointKey(point) {
-  return `${point.x.toFixed(2)},${point.y.toFixed(2)}`;
-}
-
 function edgeKey(startKey, endKey) {
   return startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
 }
@@ -245,12 +343,41 @@ function edgeKey(startKey, endKey) {
 function traceSegments(segments) {
   const vertices = new Map();
   const edges = new Map();
+  const spatialBuckets = new Map();
+  let nextVertexId = 0;
 
   function ensureVertex(point) {
-    const key = buildPointKey(point);
-    if (!vertices.has(key)) {
-      vertices.set(key, { x: point.x, y: point.y, neighbors: [] });
+    const bucketX = Math.round(point.x / VERTEX_MERGE_TOLERANCE);
+    const bucketY = Math.round(point.y / VERTEX_MERGE_TOLERANCE);
+
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const bucketKey = `${bucketX + dx},${bucketY + dy}`;
+        const bucket = spatialBuckets.get(bucketKey);
+
+        if (!bucket) {
+          continue;
+        }
+
+        for (const key of bucket) {
+          const vertex = vertices.get(key);
+          if (Math.hypot(vertex.x - point.x, vertex.y - point.y) <= VERTEX_MERGE_TOLERANCE) {
+            return key;
+          }
+        }
+      }
     }
+
+    const key = String(nextVertexId);
+    nextVertexId += 1;
+    vertices.set(key, { x: point.x, y: point.y, neighbors: [] });
+
+    const homeBucketKey = `${bucketX},${bucketY}`;
+    if (!spatialBuckets.has(homeBucketKey)) {
+      spatialBuckets.set(homeBucketKey, []);
+    }
+
+    spatialBuckets.get(homeBucketKey).push(key);
     return key;
   }
 
@@ -360,10 +487,11 @@ function render() {
   const stage = scene.parentElement;
   const width = stage.clientWidth;
   const height = stage.clientHeight;
-  const cellSize = contourCellSize(currentTime);
+  const sampleWarpNode = createWarpSampler(width, height, currentTime);
+  const { xCoords, yCoords } = buildAdaptiveAxes(width, height, sampleWarpNode);
   // Sample the warped coordinate field on a screen-space lattice, then extract
   // iso-lines where qx or qy land on half-integer grid coordinates.
-  const warpGrid = buildWarpGrid(width, height, currentTime, cellSize);
+  const warpGrid = buildWarpGrid(xCoords, yCoords, sampleWarpNode);
 
   scene.setAttribute("viewBox", `0 0 ${width} ${height}`);
   scene.replaceChildren();
@@ -376,10 +504,18 @@ function render() {
   appendContourFamily(horizontalGroup, offsets, "horizontal", "#d4372f", warpGrid);
   appendContourFamily(verticalGroup, offsets, "vertical", "#148a45", warpGrid);
 
+  let minCellSize = Infinity;
+  for (let index = 1; index < xCoords.length; index += 1) {
+    minCellSize = Math.min(minCellSize, xCoords[index] - xCoords[index - 1]);
+  }
+  for (let index = 1; index < yCoords.length; index += 1) {
+    minCellSize = Math.min(minCellSize, yCoords[index] - yCoords[index - 1]);
+  }
+
   scene.append(horizontalGroup, verticalGroup);
   timeValue.value = currentTime.toFixed(1);
   timeValue.textContent = currentTime.toFixed(1);
-  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsets.length} lines per axis · contour cell ${cellSize.toFixed(1)}px`;
+  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsets.length} lines per axis · adaptive ${MAX_CONTOUR_CELL_SIZE}px to ${minCellSize.toFixed(1)}px`;
 }
 
 timeSlider.value = String(DEFAULT_TIME);
