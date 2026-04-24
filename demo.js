@@ -9,12 +9,12 @@ const FIELD_EPSILON = 0.75;
 const MIN_GRADIENT_NORM = 1e-4;
 const NEWTON_TOLERANCE = 1e-3;
 const MAX_PROJECTION_ITERATIONS = 10;
-const INITIAL_TRACE_STEP = 6;
-const MAX_TRACE_STEP = 16;
+const INITIAL_TRACE_STEP = 4;
+const MAX_TRACE_STEP = 8;
 const MIN_TRACE_STEP = 0.35;
 const MAX_TRACE_TURN = Math.PI / 3;
 const MAX_TRACE_STEPS = 4000;
-const LOOP_CLOSURE_DISTANCE = 5;
+const LOOP_CLOSURE_DISTANCE = 3;
 const MIN_LOOP_ARC_LENGTH = 40;
 const SEED_DEDUP_DISTANCE = 4;
 const VISITED_BUCKET_SIZE = 18;
@@ -26,7 +26,10 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const scene = document.getElementById("scene");
 const caption = document.getElementById("caption");
 const timeSlider = document.getElementById("time-slider");
+const timeInput = document.getElementById("time-input");
 const timeValue = document.getElementById("time-value");
+const minTime = Number(timeSlider.min);
+const maxTime = Number(timeSlider.max);
 
 let currentTime = DEFAULT_TIME;
 
@@ -511,9 +514,31 @@ function traceDirection(field, axisKey, offset, seedSample, direction) {
     let accepted = null;
 
     while (localStep >= MIN_TRACE_STEP) {
+      const midpointGuess = {
+        x: current.x + current.tangent.x * localStep * 0.5,
+        y: current.y + current.tangent.y * localStep * 0.5,
+      };
+      const projectedMidpoint = projectToContour(field, axisKey, offset, midpointGuess);
+      if (!projectedMidpoint) {
+        localStep *= 0.5;
+        continue;
+      }
+
+      const midpointGradient = field.gradient(axisKey, offset, projectedMidpoint.x, projectedMidpoint.y);
+      if (Math.hypot(midpointGradient.x, midpointGradient.y) < MIN_GRADIENT_NORM) {
+        localStep *= 0.5;
+        continue;
+      }
+
+      const midpointTangent = tangentFromGradient(midpointGradient, current.tangent);
+      if (!midpointTangent) {
+        localStep *= 0.5;
+        continue;
+      }
+
       const predicted = {
-        x: current.x + current.tangent.x * localStep,
-        y: current.y + current.tangent.y * localStep,
+        x: current.x + midpointTangent.x * localStep,
+        y: current.y + midpointTangent.y * localStep,
       };
       const projected = projectToContour(field, axisKey, offset, predicted);
       if (!projected) {
@@ -642,18 +667,88 @@ function formatNumber(value) {
   return value.toFixed(PATH_DECIMALS);
 }
 
+function rotateSamples(samples, startIndex) {
+  return samples.slice(startIndex).concat(samples.slice(0, startIndex));
+}
+
+function directionBetween(start, end) {
+  return normalize({
+    x: end.x - start.x,
+    y: end.y - start.y,
+  });
+}
+
+function sampleTurnAngle(previousPoint, point, nextPoint) {
+  const incoming = directionBetween(previousPoint, point);
+  const outgoing = directionBetween(point, nextPoint);
+  if (!incoming || !outgoing) {
+    return Math.PI;
+  }
+
+  return Math.acos(clamp(dot(incoming, outgoing), -1, 1));
+}
+
+function chooseClosedFitSeam(samples) {
+  if (samples.length < 3) {
+    return 0;
+  }
+
+  let bestIndex = 0;
+  let bestScore = Infinity;
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const previous = samples[(index - 1 + samples.length) % samples.length];
+    const current = samples[index];
+    const next = samples[(index + 1) % samples.length];
+    const turn = sampleTurnAngle(previous, current, next);
+    const localScale = Math.min(distance(previous, current), distance(current, next));
+    const score = turn + 1 / Math.max(localScale, 1e-3);
+    if (score < bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+function createWorkingSamples(component) {
+  if (!component.closed) {
+    return {
+      samples: component.samples,
+      closed: false,
+    };
+  }
+
+  const seamIndex = chooseClosedFitSeam(component.samples);
+  const rotated = rotateSamples(component.samples, seamIndex);
+  const first = rotated[0];
+  return {
+    samples: [
+      ...rotated,
+      {
+        x: first.x,
+        y: first.y,
+        tangent: { x: first.tangent.x, y: first.tangent.y },
+      },
+    ],
+    closed: true,
+  };
+}
+
 function createPathData(component) {
-  const { samples, closed } = component;
+  const working = createWorkingSamples(component);
+  const { samples } = working;
   if (samples.length < 2) {
     return "";
   }
 
   let pathData = `M ${formatNumber(samples[0].x)} ${formatNumber(samples[0].y)}`;
-  const segmentCount = closed ? samples.length : samples.length - 1;
+  const segmentCount = samples.length - 1;
 
   for (let index = 0; index < segmentCount; index += 1) {
     const start = samples[index];
-    const end = samples[(index + 1) % samples.length];
+    const end = samples[index + 1];
     const segmentLength = distance(start, end);
     const handleLength = segmentLength / 3;
     const control1 = {
@@ -667,7 +762,7 @@ function createPathData(component) {
     pathData += ` C ${formatNumber(control1.x)} ${formatNumber(control1.y)} ${formatNumber(control2.x)} ${formatNumber(control2.y)} ${formatNumber(end.x)} ${formatNumber(end.y)}`;
   }
 
-  if (closed) {
+  if (component.closed) {
     pathData += " Z";
   }
 
@@ -711,6 +806,39 @@ function appendContourFamily(group, offsets, axisKey, stroke, warpGrid, field) {
   }
 }
 
+function syncTimeControls() {
+  const formattedTime = currentTime.toFixed(1);
+  timeSlider.value = formattedTime;
+  timeInput.value = formattedTime;
+  timeValue.textContent = formattedTime;
+}
+
+function setCurrentTime(nextTime) {
+  if (!Number.isFinite(nextTime)) {
+    syncTimeControls();
+    return;
+  }
+
+  const clampedTime = clamp(nextTime, minTime, maxTime);
+  if (clampedTime === currentTime) {
+    syncTimeControls();
+    return;
+  }
+
+  currentTime = clampedTime;
+  render();
+}
+
+function commitTimeInputValue() {
+  const rawValue = timeInput.value.trim();
+  if (rawValue === "") {
+    syncTimeControls();
+    return;
+  }
+
+  setCurrentTime(Number(rawValue));
+}
+
 function render() {
   const stage = scene.parentElement;
   const width = stage.clientWidth;
@@ -734,15 +862,25 @@ function render() {
   const minCellSize = Math.min(minAxisStep(xCoords), minAxisStep(yCoords));
 
   scene.append(horizontalGroup, verticalGroup);
-  timeValue.value = currentTime.toFixed(1);
-  timeValue.textContent = currentTime.toFixed(1);
+  syncTimeControls();
   caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsets.length} lines per axis · traced paths from adaptive ${MAX_CONTOUR_CELL_SIZE}px to ${minCellSize.toFixed(1)}px seeds`;
 }
 
-timeSlider.value = String(DEFAULT_TIME);
 timeSlider.addEventListener("input", (event) => {
-  currentTime = Number(event.target.value);
-  render();
+  setCurrentTime(Number(event.target.value));
+});
+
+timeInput.addEventListener("change", () => {
+  commitTimeInputValue();
+});
+
+timeInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+
+  event.preventDefault();
+  commitTimeInputValue();
 });
 
 const resizeObserver = new ResizeObserver(() => {
