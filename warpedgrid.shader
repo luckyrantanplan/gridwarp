@@ -117,7 +117,7 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     /*
         Warps the uv coordinates and draws grid
     */
-    uv *= 2.0;
+    uv *= 10.0;
 
     float radius = length(uv);
     float centerWeight = exp(-0.16*radius*radius);
