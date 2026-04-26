@@ -21,7 +21,6 @@ export const SPIRAL_SOURCE_OFFSET = 0.4 * OUTER_OCTAGON_RADIUS;
 const WINDING_RATE = Math.PI;
 /** Maximum displacement amplitude per spiral; the central peak doubles this. */
 const PEAK_DISPLACEMENT_PER_TIME = 0.005;
-const PEAK_DISPLACEMENT_CAP = 1.0;
 /**
  * Smootherstep band width (in plane units) across which the boundary mask ramps from 0
  * at the outer octagon boundary up to 1 deep inside. Wider than the geometric edge so the
@@ -30,7 +29,7 @@ const PEAK_DISPLACEMENT_CAP = 1.0;
 const BOUNDARY_TRANSITION_WIDTH = 0.55 * OUTER_OCTAGON_RADIUS;
 
 export function createDualSpiralOctagonAffinePair(point: Complex, time: number): ComplexAffinePair {
-  const peakDisplacement = clamp(PEAK_DISPLACEMENT_PER_TIME * time, 0, PEAK_DISPLACEMENT_CAP);
+  const peakDisplacement = Math.max(PEAK_DISPLACEMENT_PER_TIME * time, 0);
   if (peakDisplacement === 0) return identityPair();
 
   const mask = octagonInteriorMask(point.real, point.imag, OUTER_OCTAGON_RADIUS, BOUNDARY_TRANSITION_WIDTH);

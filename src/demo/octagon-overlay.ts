@@ -16,7 +16,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const SEGMENT_RANGE_EPSILON = 1e-6;
 const MAX_ENDPOINT_SNAP_DISTANCE = 24;
 const MAX_RING_JOIN_DISTANCE = 40;
-const MAX_RING_ENDPOINT_CLUSTER_DISTANCE = 16;
+const CLIP_BOUNDARY_REFINEMENT_ITERATIONS = 20;
 const ENDPOINT_SOLVER_TOLERANCE = 1e-3;
 const ENDPOINT_SOLVER_MAX_DISPLACEMENT = 48;
 const ENDPOINT_SOLVER_ITERATIONS = 60;
@@ -47,6 +47,15 @@ interface ClipRun {
   readonly samples: TangentSample[];
   readonly clippedAtStart: boolean;
   readonly clippedAtEnd: boolean;
+}
+
+interface EdgeImageRef {
+  readonly image: SegmentImage;
+}
+
+interface SegmentImage extends TracedComponent {
+  readonly clippedAtSegmentStart: boolean;
+  readonly clippedAtSegmentEnd: boolean;
 }
 
 /**
@@ -105,12 +114,7 @@ function appendOctagon(
     tracer,
     endpointSolver,
   ));
-  snapOctagonEdgeJoins(edgeImages);
-  snapNearbyOpenEndpoints(edgeImages.flat());
-
-  for (const components of edgeImages) {
-    appendComponents(parent, components, renderer, stroke);
-  }
+  appendComponents(parent, mergeOctagonEdgeImages(edgeImages), renderer, stroke);
 }
 
 function octagonEdges(radius: number): PlaneSegment[] {
@@ -160,7 +164,7 @@ function traceSegmentImages(
   leafCells: readonly Cell[],
   tracer: ContourTracer,
   endpointSolver: EndpointSolver,
-): TracedComponent[] {
+): SegmentImage[] {
   const geometry = segmentGeometry(segment);
   if (!geometry) return [];
 
@@ -187,9 +191,9 @@ function traceSegmentCandidates(
   tracer: ContourTracer,
   startPoint: Point | null,
   endPoint: Point | null,
-): TracedComponent[] {
+): SegmentImage[] {
   const field = new WarpLinearField(warp, geometry.normal, geometry.lineOffset);
-  const candidates: TracedComponent[] = [];
+  const candidates: SegmentImage[] = [];
 
   for (const component of tracer.trace(field, leafCells)) {
     candidates.push(...clipComponentToRange(
@@ -231,26 +235,27 @@ function clipComponentToRange(
   endParameter: number,
   startPoint: Point | null,
   endPoint: Point | null,
-): TracedComponent[] {
+): SegmentImage[] {
   const minParameter = Math.min(startParameter, endParameter);
   const maxParameter = Math.max(startParameter, endParameter);
   if (component.closed && component.samples.every((sample) => isParameterInRange(sampleParameter(sample, warp, direction), minParameter, maxParameter))) {
-    return [cloneComponent(component)];
+    return [createSegmentImage(cloneComponent(component), false, false)];
   }
 
   const samples = component.closed ? [...component.samples, component.samples[0]] : component.samples;
   const runs = collectClipRuns(samples, warp, direction, minParameter, maxParameter);
 
-  const clippedComponents: TracedComponent[] = [];
+  const clippedComponents: SegmentImage[] = [];
   for (const run of runs) {
     if (run.samples.length < 2) continue;
-    const oriented = orientRun(run, startParameter <= endParameter);
+    const oriented = orientRunByParameter(run, warp, direction, startParameter <= endParameter);
     const snappedStart = chooseSnapPoint(oriented.samples[0], startPoint);
     const snappedEnd = chooseSnapPoint(oriented.samples[oriented.samples.length - 1], endPoint);
-    clippedComponents.push({
-      closed: false,
-      samples: snapRunEndpoints(oriented.samples, snappedStart, snappedEnd),
-    });
+    clippedComponents.push(createSegmentImage(
+      { closed: false, samples: snapRunEndpoints(oriented.samples, snappedStart, snappedEnd) },
+      oriented.clippedAtStart,
+      oriented.clippedAtEnd,
+    ));
   }
   return clippedComponents;
 }
@@ -262,26 +267,40 @@ function collectClipRuns(
   minParameter: number,
   maxParameter: number,
 ): ClipRun[] {
-  const runs: ClipRun[] = [];
-  let currentSamples: TangentSample[] = [];
-  let currentClippedAtStart = false;
-  let sawOutOfRange = false;
+  if (samples.length === 0) return [];
 
-  for (const sample of samples) {
+  const runs: ClipRun[] = [];
+  let previousSample = samples[0];
+  let previousParameter = sampleParameter(previousSample, warp, direction);
+  let previousInRange = isParameterInRange(previousParameter, minParameter, maxParameter);
+  let currentSamples: TangentSample[] = previousInRange ? [previousSample] : [];
+  let currentClippedAtStart = false;
+
+  for (const sample of samples.slice(1)) {
     const parameter = sampleParameter(sample, warp, direction);
     const inRange = isParameterInRange(parameter, minParameter, maxParameter);
-    if (inRange) {
-      if (currentSamples.length === 0) currentClippedAtStart = sawOutOfRange;
-      currentSamples.push(sample);
-      continue;
-    }
 
-    sawOutOfRange = true;
-    if (currentSamples.length > 0) {
+    if (previousInRange && inRange) {
+      currentSamples.push(sample);
+    } else if (previousInRange && !inRange) {
+      currentSamples.push(interpolateAtRangeBoundary(previousSample, previousParameter, sample, parameter, warp, direction, minParameter, maxParameter));
       runs.push({ samples: currentSamples, clippedAtStart: currentClippedAtStart, clippedAtEnd: true });
       currentSamples = [];
       currentClippedAtStart = false;
+    } else if (!previousInRange && inRange) {
+      currentSamples = [
+        interpolateAtRangeBoundary(previousSample, previousParameter, sample, parameter, warp, direction, minParameter, maxParameter),
+        sample,
+      ];
+      currentClippedAtStart = true;
+    } else {
+      const spanningRun = collectSpanningRun(previousSample, previousParameter, sample, parameter, warp, direction, minParameter, maxParameter);
+      if (spanningRun) runs.push(spanningRun);
     }
+
+    previousSample = sample;
+    previousParameter = parameter;
+    previousInRange = inRange;
   }
 
   if (currentSamples.length > 0) {
@@ -290,8 +309,94 @@ function collectClipRuns(
   return runs;
 }
 
-function orientRun(run: ClipRun, forward: boolean): ClipRun {
-  if (forward) return run;
+function collectSpanningRun(
+  start: TangentSample,
+  startParameter: number,
+  end: TangentSample,
+  endParameter: number,
+  warp: WarpField,
+  direction: Point,
+  minParameter: number,
+  maxParameter: number,
+): ClipRun | null {
+  const crossesWholeRange = (startParameter < minParameter && endParameter > maxParameter)
+    || (startParameter > maxParameter && endParameter < minParameter);
+  if (!crossesWholeRange) return null;
+
+  const firstTarget = startParameter < minParameter ? minParameter : maxParameter;
+  const secondTarget = startParameter < minParameter ? maxParameter : minParameter;
+  return {
+    samples: [
+      interpolateAtParameter(start, startParameter, end, endParameter, firstTarget, warp, direction),
+      interpolateAtParameter(start, startParameter, end, endParameter, secondTarget, warp, direction),
+    ],
+    clippedAtStart: true,
+    clippedAtEnd: true,
+  };
+}
+
+function interpolateAtRangeBoundary(
+  start: TangentSample,
+  startParameter: number,
+  end: TangentSample,
+  endParameter: number,
+  warp: WarpField,
+  direction: Point,
+  minParameter: number,
+  maxParameter: number,
+): TangentSample {
+  const targetParameter = startParameter < minParameter || endParameter < minParameter ? minParameter : maxParameter;
+  return interpolateAtParameter(start, startParameter, end, endParameter, targetParameter, warp, direction);
+}
+
+function interpolateAtParameter(
+  start: TangentSample,
+  startParameter: number,
+  end: TangentSample,
+  endParameter: number,
+  targetParameter: number,
+  warp: WarpField,
+  direction: Point,
+): TangentSample {
+  let lowSample = start;
+  let lowParameter = startParameter;
+  let highSample = end;
+  let highParameter = endParameter;
+
+  for (let iteration = 0; iteration < CLIP_BOUNDARY_REFINEMENT_ITERATIONS; iteration += 1) {
+    const midpointSample = interpolateSample(lowSample, highSample, 0.5);
+    const midpointParameter = sampleParameter(midpointSample, warp, direction);
+    if (sameParameterSide(lowParameter, midpointParameter, targetParameter)) {
+      lowSample = midpointSample;
+      lowParameter = midpointParameter;
+    } else {
+      highSample = midpointSample;
+      highParameter = midpointParameter;
+    }
+  }
+
+  const denominator = highParameter - lowParameter;
+  const amount = Math.abs(denominator) < 1e-12 ? 0.5 : clamp((targetParameter - lowParameter) / denominator, 0, 1);
+  return interpolateSample(lowSample, highSample, amount);
+}
+
+function sameParameterSide(firstParameter: number, secondParameter: number, targetParameter: number): boolean {
+  return (firstParameter - targetParameter) * (secondParameter - targetParameter) >= 0;
+}
+
+function interpolateSample(start: TangentSample, end: TangentSample, amount: number): TangentSample {
+  return {
+    x: mix(start.x, end.x, amount),
+    y: mix(start.y, end.y, amount),
+    tangent: normalize(mixPoint(start.tangent, end.tangent, amount)) ?? start.tangent,
+  };
+}
+
+function orientRunByParameter(run: ClipRun, warp: WarpField, direction: Point, increasing: boolean): ClipRun {
+  const firstParameter = sampleParameter(run.samples[0], warp, direction);
+  const lastParameter = sampleParameter(lastSample(run.samples), warp, direction);
+  if ((lastParameter >= firstParameter) === increasing) return run;
+
   return {
     samples: reverseSamples(run.samples),
     clippedAtStart: run.clippedAtEnd,
@@ -310,27 +415,53 @@ function chooseSnapPoint(sample: TangentSample, endpoint: Point | null): Point |
   return endpoint !== null && distance(sample, endpoint) <= MAX_ENDPOINT_SNAP_DISTANCE ? endpoint : null;
 }
 
-function snapOctagonEdgeJoins(edgeImages: TracedComponent[][]): void {
+function mergeOctagonEdgeImages(edgeImages: readonly SegmentImage[][]): TracedComponent[] {
+  const closedComponents = edgeImages.flatMap((components) => components.filter((component) => component.closed).map(cloneComponent));
+  const openRefs = edgeImages.map((components) => components
+    .filter((image) => !image.closed)
+    .map((image) => ({ image: cloneSegmentImage(image) })));
+
+  const nextRefByRef = new Map<EdgeImageRef, EdgeImageRef>();
+  const previousRefByRef = new Map<EdgeImageRef, EdgeImageRef>();
   for (let edgeIndex = 0; edgeIndex < edgeImages.length; edgeIndex += 1) {
-    const previousEdge = edgeImages[(edgeIndex + edgeImages.length - 1) % edgeImages.length];
-    const nextEdge = edgeImages[edgeIndex];
-    snapAdjacentEdgeImages(previousEdge, nextEdge);
+    linkAdjacentEdgeImages(
+      openRefs[edgeIndex],
+      openRefs[(edgeIndex + 1) % edgeImages.length],
+      nextRefByRef,
+      previousRefByRef,
+    );
   }
+
+  const mergedComponents: TracedComponent[] = [];
+  const visitedRefs = new Set<EdgeImageRef>();
+  for (const ref of openRefs.flat()) {
+    if (visitedRefs.has(ref) || previousRefByRef.has(ref)) continue;
+    mergedComponents.push(mergeImageChain(ref, nextRefByRef, visitedRefs));
+  }
+  for (const ref of openRefs.flat()) {
+    if (visitedRefs.has(ref)) continue;
+    mergedComponents.push(mergeImageChain(ref, nextRefByRef, visitedRefs));
+  }
+
+  return [...closedComponents, ...mergedComponents];
 }
 
-function snapAdjacentEdgeImages(previousEdge: TracedComponent[], nextEdge: TracedComponent[]): void {
-  const availableStarts = nextEdge
-    .map((component) => ({ component }))
-    .filter(({ component }) => !component.closed);
+function linkAdjacentEdgeImages(
+  previousEdge: readonly EdgeImageRef[],
+  nextEdge: readonly EdgeImageRef[],
+  nextRefByRef: Map<EdgeImageRef, EdgeImageRef>,
+  previousRefByRef: Map<EdgeImageRef, EdgeImageRef>,
+): void {
+  const availableNextRefs = nextEdge.filter((ref) => ref.image.clippedAtSegmentStart);
 
-  for (const previous of previousEdge) {
-    if (previous.closed) continue;
-    const previousEnd = lastSample(previous.samples);
+  for (const previousRef of previousEdge) {
+    if (!previousRef.image.clippedAtSegmentEnd) continue;
+    const previousEnd = lastSample(previousRef.image.samples);
     let bestStartIndex = -1;
     let bestDistance = MAX_RING_JOIN_DISTANCE;
 
-    for (let index = 0; index < availableStarts.length; index += 1) {
-      const nextStart = availableStarts[index].component.samples[0];
+    for (let index = 0; index < availableNextRefs.length; index += 1) {
+      const nextStart = availableNextRefs[index].image.samples[0];
       const gap = distance(previousEnd, nextStart);
       if (gap < bestDistance) {
         bestDistance = gap;
@@ -340,68 +471,46 @@ function snapAdjacentEdgeImages(previousEdge: TracedComponent[], nextEdge: Trace
 
     if (bestStartIndex < 0) continue;
 
-    const [match] = availableStarts.splice(bestStartIndex, 1);
-    const nextStart = match.component.samples[0];
-    const sharedPoint = midpoint(previousEnd, nextStart);
-    replaceLastSample(previous.samples, sharedPoint);
-    match.component.samples[0] = replacePoint(nextStart, sharedPoint);
+    const [nextRef] = availableNextRefs.splice(bestStartIndex, 1);
+    nextRefByRef.set(previousRef, nextRef);
+    previousRefByRef.set(nextRef, previousRef);
   }
 }
 
-function snapNearbyOpenEndpoints(components: readonly TracedComponent[]): void {
-  const endpoints = collectOpenEndpoints(components);
-  const clusters: EndpointReference[][] = [];
+function mergeImageChain(
+  firstRef: EdgeImageRef,
+  nextRefByRef: ReadonlyMap<EdgeImageRef, EdgeImageRef>,
+  visitedRefs: Set<EdgeImageRef>,
+): TracedComponent {
+  const samples = firstRef.image.samples.slice();
+  visitedRefs.add(firstRef);
+  let closed = false;
 
-  for (const endpoint of endpoints) {
-    const cluster = clusters.find((candidate) => candidate.some((clusterEndpoint) => {
-      return distance(endpoint.sample(), clusterEndpoint.sample()) <= MAX_RING_ENDPOINT_CLUSTER_DISTANCE;
-    }));
-    if (cluster) {
-      cluster.push(endpoint);
-    } else {
-      clusters.push([endpoint]);
-    }
+  let currentRef = firstRef;
+  let nextRef = nextRefByRef.get(currentRef);
+  while (nextRef !== undefined && !visitedRefs.has(nextRef)) {
+    appendJoinedSamples(samples, nextRef.image.samples);
+    visitedRefs.add(nextRef);
+    currentRef = nextRef;
+    nextRef = nextRefByRef.get(currentRef);
   }
 
-  for (const cluster of clusters) {
-    if (cluster.length < 2) continue;
-    const sharedPoint = averageEndpoint(cluster);
-    for (const endpoint of cluster) {
-      endpoint.replace(sharedPoint);
-    }
+  const closingRef = nextRefByRef.get(currentRef);
+  if (closingRef === firstRef) {
+    const sharedPoint = midpoint(lastSample(samples), samples[0]);
+    replaceLastSample(samples, sharedPoint);
+    samples[0] = replacePoint(samples[0], sharedPoint);
+    samples.pop();
+    closed = true;
   }
+
+  return { closed, samples };
 }
 
-interface EndpointReference {
-  sample(): TangentSample;
-  replace(point: Point): void;
-}
-
-function collectOpenEndpoints(components: readonly TracedComponent[]): EndpointReference[] {
-  const endpoints: EndpointReference[] = [];
-  for (const component of components) {
-    if (component.closed) continue;
-    endpoints.push({
-      sample: () => component.samples[0],
-      replace: (point) => { component.samples[0] = replacePoint(component.samples[0], point); },
-    });
-    endpoints.push({
-      sample: () => lastSample(component.samples),
-      replace: (point) => { replaceLastSample(component.samples, point); },
-    });
-  }
-  return endpoints;
-}
-
-function averageEndpoint(endpoints: readonly EndpointReference[]): Point {
-  let x = 0;
-  let y = 0;
-  for (const endpoint of endpoints) {
-    const sample = endpoint.sample();
-    x += sample.x;
-    y += sample.y;
-  }
-  return { x: x / endpoints.length, y: y / endpoints.length };
+function appendJoinedSamples(samples: TangentSample[], nextSamples: readonly TangentSample[]): void {
+  const sharedPoint = midpoint(lastSample(samples), nextSamples[0]);
+  replaceLastSample(samples, sharedPoint);
+  samples.push(replacePoint(nextSamples[0], sharedPoint), ...nextSamples.slice(1));
 }
 
 function isParameterInRange(parameter: number, minParameter: number, maxParameter: number): boolean {
@@ -453,10 +562,33 @@ function cloneComponent(component: TracedComponent): TracedComponent {
   };
 }
 
+function cloneSegmentImage(image: SegmentImage): SegmentImage {
+  return createSegmentImage(cloneComponent(image), image.clippedAtSegmentStart, image.clippedAtSegmentEnd);
+}
+
+function createSegmentImage(
+  component: TracedComponent,
+  clippedAtSegmentStart: boolean,
+  clippedAtSegmentEnd: boolean,
+): SegmentImage {
+  return {
+    ...component,
+    clippedAtSegmentStart,
+    clippedAtSegmentEnd,
+  };
+}
+
 function midpoint(first: Point, second: Point): Point {
   return {
     x: 0.5 * (first.x + second.x),
     y: 0.5 * (first.y + second.y),
+  };
+}
+
+function mixPoint(first: Point, second: Point, amount: number): Point {
+  return {
+    x: mix(first.x, second.x, amount),
+    y: mix(first.y, second.y, amount),
   };
 }
 
@@ -521,6 +653,10 @@ function normalize(vector: Point): Point | null {
 
 function distance(first: Point, second: Point): number {
   return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function mix(start: number, end: number, amount: number): number {
+  return start * (1 - amount) + end * amount;
 }
 
 function clamp(value: number, min: number, max: number): number {
