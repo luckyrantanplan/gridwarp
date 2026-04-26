@@ -33,9 +33,12 @@ interface PlaneSegment {
   readonly end: Point;
 }
 
-interface ParametricSample {
-  readonly sample: TangentSample;
-  readonly t: number;
+interface SegmentGeometry {
+  readonly direction: Point;
+  readonly normal: Point;
+  readonly lineOffset: number;
+  readonly startParameter: number;
+  readonly endParameter: number;
 }
 
 /**
@@ -49,31 +52,44 @@ export function createWarpedOctagonOverlay(
   renderer: SvgContourRenderer,
   settings: OctagonOverlaySettings,
 ): SVGGElement {
-  const group = document.createElementNS(SVG_NS, "g");
-  group.setAttribute("fill", "none");
-  group.setAttribute("stroke", settings.stroke);
-  group.setAttribute("stroke-width", String(settings.strokeWidth));
-  group.setAttribute("stroke-linecap", "round");
-  group.setAttribute("stroke-linejoin", "round");
-  group.setAttribute("vector-effect", "non-scaling-stroke");
-
+  const group = createOverlayGroup(settings.stroke, settings.strokeWidth);
   const endpointSolver = new EndpointSolver(warp);
 
-  for (const segment of octagonEdges(settings.outerRadius)) {
-    appendSegment(group, segment, warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
-  }
-  for (const segment of octagonEdges(settings.innerRadius)) {
-    appendSegment(group, segment, warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
-  }
+  appendSegments(group, octagonEdges(settings.outerRadius), warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
+  appendSegments(group, octagonEdges(settings.innerRadius), warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
 
-  const diagonals = document.createElementNS(SVG_NS, "g");
+  const diagonals = createOverlayGroup(settings.stroke, settings.strokeWidth);
   diagonals.setAttribute("opacity", String(settings.diagonalOpacity));
-  for (const segment of octagonDiagonals(settings.outerRadius)) {
-    appendSegment(diagonals, segment, warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
-  }
+  appendSegments(diagonals, octagonDiagonals(settings.outerRadius), warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
   group.appendChild(diagonals);
 
   return group;
+}
+
+function createOverlayGroup(stroke: string, strokeWidth: number): SVGGElement {
+  const group = document.createElementNS(SVG_NS, "g");
+  group.setAttribute("fill", "none");
+  group.setAttribute("stroke", stroke);
+  group.setAttribute("stroke-width", String(strokeWidth));
+  group.setAttribute("stroke-linecap", "round");
+  group.setAttribute("stroke-linejoin", "round");
+  group.setAttribute("vector-effect", "non-scaling-stroke");
+  return group;
+}
+
+function appendSegments(
+  parent: SVGGElement,
+  segments: readonly PlaneSegment[],
+  warp: WarpField,
+  leafCells: readonly Cell[],
+  tracer: ContourTracer,
+  renderer: SvgContourRenderer,
+  stroke: string,
+  endpointSolver: EndpointSolver,
+): void {
+  for (const segment of segments) {
+    appendSegment(parent, segment, warp, leafCells, tracer, renderer, stroke, endpointSolver);
+  }
 }
 
 function octagonEdges(radius: number): PlaneSegment[] {
@@ -82,6 +98,7 @@ function octagonEdges(radius: number): PlaneSegment[] {
     const angle = vertex * Math.PI / 4;
     vertices.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
   }
+
   const segments: PlaneSegment[] = [];
   for (let vertex = 0; vertex < 8; vertex += 1) {
     segments.push({ start: vertices[vertex], end: vertices[(vertex + 1) % 8] });
@@ -113,68 +130,114 @@ function appendSegment(
   stroke: string,
   endpointSolver: EndpointSolver,
 ): void {
+  const geometry = segmentGeometry(segment);
+  if (!geometry) return;
+
+  const field = new WarpLinearField(warp, geometry.normal, geometry.lineOffset);
+  const startPoint = endpointSolver.solve(segment.start);
+  const endPoint = endpointSolver.solve(segment.end);
+  const components = tracer.trace(field, leafCells);
+
+  for (const component of components) {
+    const clippedComponents = clipComponentToRange(
+      component,
+      warp,
+      geometry.direction,
+      geometry.startParameter,
+      geometry.endParameter,
+      startPoint,
+      endPoint,
+    );
+    for (const clipped of clippedComponents) {
+      parent.appendChild(renderer.createPathElement(clipped, stroke));
+    }
+  }
+}
+
+function segmentGeometry(segment: PlaneSegment): SegmentGeometry | null {
   const direction = normalize({
     x: segment.end.x - segment.start.x,
     y: segment.end.y - segment.start.y,
   });
-  if (!direction) return;
+  if (!direction) return null;
 
   const normal: Point = { x: -direction.y, y: direction.x };
-  const lineOffset = normal.x * segment.start.x + normal.y * segment.start.y;
-  const tStart = direction.x * segment.start.x + direction.y * segment.start.y;
-  const tEnd = direction.x * segment.end.x + direction.y * segment.end.y;
-  const field = new WarpLinearField(warp, normal, lineOffset);
-  const startPoint = endpointSolver.solve(segment.start);
-  const endPoint = endpointSolver.solve(segment.end);
+  return {
+    direction,
+    normal,
+    lineOffset: normal.x * segment.start.x + normal.y * segment.start.y,
+    startParameter: direction.x * segment.start.x + direction.y * segment.start.y,
+    endParameter: direction.x * segment.end.x + direction.y * segment.end.y,
+  };
+}
 
-  const components = tracer.trace(field, leafCells);
-  for (const component of components) {
-    for (const clipped of clipComponentToRange(component, warp, direction, tStart, tEnd, startPoint, endPoint)) {
-      parent.appendChild(renderer.createPathElement(clipped, stroke));
-    }
-  }
+interface ClipRun {
+  readonly samples: TangentSample[];
+  readonly clippedAtStart: boolean;
+  readonly clippedAtEnd: boolean;
 }
 
 function clipComponentToRange(
   component: TracedComponent,
   warp: WarpField,
   direction: Point,
-  tStart: number,
-  tEnd: number,
+  startParameter: number,
+  endParameter: number,
   startPoint: Point | null,
   endPoint: Point | null,
 ): TracedComponent[] {
-  const tMin = Math.min(tStart, tEnd);
-  const tMax = Math.max(tStart, tEnd);
+  const minParameter = Math.min(startParameter, endParameter);
+  const maxParameter = Math.max(startParameter, endParameter);
   const samples = component.closed
     ? [...component.samples, component.samples[0]]
     : component.samples;
 
-  const insideRuns: ParametricSample[][] = [];
-  let currentRun: ParametricSample[] = [];
+  const runs: ClipRun[] = [];
+  let currentSamples: TangentSample[] = [];
+  let currentClippedAtStart = false;
+  let sawOutOfRange = false;
 
   for (const sample of samples) {
-    const t = sampleParameter(sample, warp, direction);
-    if (t >= tMin - SEGMENT_RANGE_EPSILON && t <= tMax + SEGMENT_RANGE_EPSILON) {
-      currentRun.push({ sample, t });
-    } else if (currentRun.length > 0) {
-      insideRuns.push(currentRun);
-      currentRun = [];
+    const parameter = sampleParameter(sample, warp, direction);
+    const inRange = parameter >= minParameter - SEGMENT_RANGE_EPSILON
+      && parameter <= maxParameter + SEGMENT_RANGE_EPSILON;
+    if (inRange) {
+      if (currentSamples.length === 0) currentClippedAtStart = sawOutOfRange;
+      currentSamples.push(sample);
+      continue;
+    }
+    sawOutOfRange = true;
+    if (currentSamples.length > 0) {
+      runs.push({ samples: currentSamples, clippedAtStart: currentClippedAtStart, clippedAtEnd: true });
+      currentSamples = [];
+      currentClippedAtStart = false;
     }
   }
-  if (currentRun.length > 0) insideRuns.push(currentRun);
+  if (currentSamples.length > 0) {
+    runs.push({ samples: currentSamples, clippedAtStart: currentClippedAtStart, clippedAtEnd: false });
+  }
 
-  const result: TracedComponent[] = [];
-  for (const run of insideRuns) {
-    if (run.length < 2) continue;
-    const orientedRun = tStart <= tEnd ? run : reverseParametricSamples(run);
-    const samplesForPath = orientedRun.map(({ sample }) => sample);
-    result.push({
+  // A closed input component fully inside the parameter range produces a single run that
+  // was never broken by clipping. Emit it as a closed loop so its first/last samples are
+  // not snapped to the segment endpoints.
+  if (component.closed && runs.length === 1 && !runs[0].clippedAtStart && !runs[0].clippedAtEnd) {
+    const closedSamples = runs[0].samples.slice(0, -1);
+    if (closedSamples.length < 2) return [];
+    return [{ closed: true, samples: closedSamples }];
+  }
+
+  const clippedComponents: TracedComponent[] = [];
+  for (const run of runs) {
+    if (run.samples.length < 2) continue;
+    const oriented = startParameter <= endParameter
+      ? { samples: run.samples, clippedAtStart: run.clippedAtStart, clippedAtEnd: run.clippedAtEnd }
+      : { samples: reverseSamples(run.samples), clippedAtStart: run.clippedAtEnd, clippedAtEnd: run.clippedAtStart };
+    clippedComponents.push({
       closed: false,
-      samples: snapRunEndpoints(samplesForPath, startPoint, endPoint),
+      samples: snapRunEndpoints(oriented.samples, oriented.clippedAtStart ? startPoint : null, oriented.clippedAtEnd ? endPoint : null),
     });
   }
-  return result;
+  return clippedComponents;
 }
 
 function sampleParameter(sample: TangentSample, warp: WarpField, direction: Point): number {
@@ -182,31 +245,29 @@ function sampleParameter(sample: TangentSample, warp: WarpField, direction: Poin
   return direction.x * warped.warpedX + direction.y * warped.warpedY;
 }
 
-function reverseParametricSamples(samples: readonly ParametricSample[]): ParametricSample[] {
-  return samples.slice().reverse().map(({ sample, t }) => ({
-    t,
-    sample: {
-      x: sample.x,
-      y: sample.y,
-      tangent: {
-        x: -sample.tangent.x,
-        y: -sample.tangent.y,
-      },
+function reverseSamples(samples: readonly TangentSample[]): TangentSample[] {
+  return samples.slice().reverse().map((sample) => ({
+    x: sample.x,
+    y: sample.y,
+    tangent: {
+      x: -sample.tangent.x,
+      y: -sample.tangent.y,
     },
   }));
 }
 
 function snapRunEndpoints(samples: readonly TangentSample[], startPoint: Point | null, endPoint: Point | null): TangentSample[] {
+  if (!startPoint && !endPoint) return samples.slice();
   const first = samples[0];
   const last = samples[samples.length - 1];
   return [
-    pointWithTangent(startPoint, first),
+    replacePoint(first, startPoint),
     ...samples.slice(1, -1),
-    pointWithTangent(endPoint, last),
+    replacePoint(last, endPoint),
   ];
 }
 
-function pointWithTangent(point: Point | null, sample: TangentSample): TangentSample {
+function replacePoint(sample: TangentSample, point: Point | null): TangentSample {
   return point
     ? { x: point.x, y: point.y, tangent: sample.tangent }
     : sample;
