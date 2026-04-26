@@ -499,7 +499,7 @@ function mergeImageChain(
   if (closingRef === firstRef) {
     const sharedPoint = midpoint(lastSample(samples), samples[0]);
     replaceLastSample(samples, sharedPoint);
-    samples[0] = replacePoint(samples[0], sharedPoint);
+    replaceFirstSample(samples, sharedPoint);
     samples.pop();
     closed = true;
   }
@@ -510,7 +510,7 @@ function mergeImageChain(
 function appendJoinedSamples(samples: TangentSample[], nextSamples: readonly TangentSample[]): void {
   const sharedPoint = midpoint(lastSample(samples), nextSamples[0]);
   replaceLastSample(samples, sharedPoint);
-  samples.push(replacePoint(nextSamples[0], sharedPoint), ...nextSamples.slice(1));
+  samples.push(...nextSamples.slice(1));
 }
 
 function isParameterInRange(parameter: number, minParameter: number, maxParameter: number): boolean {
@@ -551,6 +551,10 @@ function replaceLastSample(samples: TangentSample[], point: Point): void {
   samples[lastIndex] = replacePoint(samples[lastIndex], point);
 }
 
+function replaceFirstSample(samples: TangentSample[], point: Point): void {
+  samples[0] = replacePoint(samples[0], point);
+}
+
 function lastSample(samples: readonly TangentSample[]): TangentSample {
   return samples[samples.length - 1];
 }
@@ -558,7 +562,15 @@ function lastSample(samples: readonly TangentSample[]): TangentSample {
 function cloneComponent(component: TracedComponent): TracedComponent {
   return {
     closed: component.closed,
-    samples: component.samples.slice(),
+    samples: component.samples.map(cloneSample),
+  };
+}
+
+function cloneSample(sample: TangentSample): TangentSample {
+  return {
+    x: sample.x,
+    y: sample.y,
+    tangent: { x: sample.tangent.x, y: sample.tangent.y },
   };
 }
 
