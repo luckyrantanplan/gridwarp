@@ -1,3 +1,6 @@
+/**
+ * Complex-number primitives shared by the warp definition, field sampling, and tests.
+ */
 export interface Complex {
   readonly real: number;
   readonly imag: number;

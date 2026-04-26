@@ -1,3 +1,6 @@
+/**
+ * Shared contour-tracing types used by the demo-side pipeline.
+ */
 import type { WarpValue } from "../lib/warp-field.js";
 
 export type { Bounds, Jacobian, WarpField, WarpValue } from "../lib/warp-field.js";

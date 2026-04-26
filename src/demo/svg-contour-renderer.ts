@@ -1,7 +1,13 @@
+/**
+ * SVG path generation for traced contour components.
+ */
 import type { Point, TangentSample, TracedComponent } from "./types.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+/**
+ * Converts traced contour samples into smooth SVG cubic Bézier paths.
+ */
 export class SvgContourRenderer {
   constructor(
     private readonly strokeWidth: number,

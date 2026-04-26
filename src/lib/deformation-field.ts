@@ -1,3 +1,6 @@
+/**
+ * Local spiral-like warp definition expressed as complex affine coefficients over the plane.
+ */
 import {  complex, type Complex, type ComplexAffinePair } from "./complex.js";
 
  interface RadialCoefficients {

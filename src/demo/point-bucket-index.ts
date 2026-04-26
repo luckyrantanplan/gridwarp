@@ -1,5 +1,11 @@
+/**
+ * Grid-bucket spatial index used to deduplicate seeds and traced samples.
+ */
 import type { Point, PointIndex } from "./types.js";
 
+/**
+ * Groups nearby points into coarse buckets for fast proximity checks.
+ */
 export class PointBucketIndex implements PointIndex {
   private readonly buckets = new Map<string, Point[]>();
 

@@ -1,5 +1,11 @@
+/**
+ * Adaptive viewport subdivision for contour extraction.
+ */
 import type { Axis, Cell, ScreenNode, WarpField } from "./types.js";
 
+/**
+ * Stores the geometric thresholds that control adaptive cell refinement.
+ */
 export class LeafCellCollectorSettings {
   constructor(
     readonly maxContourCellSize: number,
@@ -9,6 +15,9 @@ export class LeafCellCollectorSettings {
   ) {}
 }
 
+/**
+ * Builds the leaf-cell set used by marching squares and seed generation.
+ */
 export class LeafCellCollector {
   constructor(
     private readonly width: number,

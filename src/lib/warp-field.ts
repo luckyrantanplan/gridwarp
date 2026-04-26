@@ -1,3 +1,6 @@
+/**
+ * Screen-space warp evaluation built on top of the sampled affine field.
+ */
 import type { AffineGridSpec } from "./affine-field-grid.js";
 import { BilinearAffineFieldHandle } from "./bilinear-affine-field-handle.js";
 import { complex, type ComplexAffinePair } from "./complex.js";
@@ -25,6 +28,9 @@ export interface WarpField {
   bounds(): Bounds;
 }
 
+/**
+ * Adapts the affine field to viewport coordinates and finite-difference Jacobians.
+ */
 export class AffineGridWarpField implements WarpField {
   private readonly planeScale: number;
   private readonly handle: BilinearAffineFieldHandle;

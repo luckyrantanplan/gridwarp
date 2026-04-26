@@ -1,5 +1,11 @@
+/**
+ * Field evaluation helpers used by Newton projection and contour tracing.
+ */
 import type { Axis, FieldContext, Point, WarpField } from "./types.js";
 
+/**
+ * Exposes scalar field values and gradients derived from the active warp.
+ */
 export class WarpFieldContext implements FieldContext {
   readonly width: number;
   readonly height: number;

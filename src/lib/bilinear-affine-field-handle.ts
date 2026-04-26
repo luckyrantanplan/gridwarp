@@ -1,3 +1,6 @@
+/**
+ * Continuous sampling over the discrete affine field using bilinear interpolation.
+ */
 import { 
   applyComplexAffine,
   complex,
@@ -6,6 +9,9 @@ import {
 } from "./complex.js";
 import type { AffineGridSpec } from "./affine-field-grid.js";
 
+/**
+ * Samples and applies the grid-backed affine warp between lattice knots.
+ */
 export class BilinearAffineFieldHandle {
   readonly spec: AffineGridSpec;
   readonly grid: readonly (readonly ComplexAffinePair[])[];

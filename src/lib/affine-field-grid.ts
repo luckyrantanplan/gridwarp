@@ -1,3 +1,6 @@
+/**
+ * Discrete lattice generation and validation for the sampled affine warp field.
+ */
 import { complex, type Complex, type ComplexAffinePair } from "./complex.js";
 
 export interface AffineGridSpec {
@@ -51,20 +54,7 @@ export function validateAffineGridSpec(spec: AffineGridSpec): void {
   }
 }
 
-export function validateAffineFieldGridShape(
-  spec: AffineGridSpec,
-  grid: readonly (readonly ComplexAffinePair[])[],
-): void {
-  if (grid.length !== spec.rows) {
-    throw new Error("Affine field grid row count does not match the specification.");
-  }
 
-  for (const row of grid) {
-    if (row.length !== spec.columns) {
-      throw new Error("Affine field grid column count does not match the specification.");
-    }
-  }
-}
 
 export function coordinateAt(index: number, count: number, minimum: number, maximum: number): number {
   return mix(minimum, maximum, index / (count - 1));
