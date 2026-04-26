@@ -1,18 +1,18 @@
 /**
- * Demo-side helpers for building and probing the centered radial warp field.
+ * Demo-side helpers for building and probing the dual-spiral octagon-masked warp field.
  */
 import {
   createAffineFieldGrid,
   type AffineGridSpec,
 } from "../lib/affine-field-grid.js";
-import { createCenteredRadialAffinePair } from "../lib/deformation-field.js";
+import { createDualSpiralOctagonAffinePair } from "../lib/deformation-field.js";
 import { AffineGridWarpField } from "../lib/warp-field.js";
 import type { WarpField } from "./types.js";
 
 /**
- * Creates the screen-space warp field used by the demo from the centered radial deformation.
+ * Creates the screen-space warp field used by the demo from the dual-spiral deformation.
  */
-export function createCenteredRadialWarpField(
+export function createDualSpiralWarpField(
   width: number,
   height: number,
   time: number,
@@ -30,7 +30,7 @@ export function createCenteredRadialWarpField(
     maxImag: yMax,
     time,
   };
-  const affineFieldGrid = createAffineFieldGrid(spec, createCenteredRadialAffinePair);
+  const affineFieldGrid = createAffineFieldGrid(spec, createDualSpiralOctagonAffinePair);
   return new AffineGridWarpField(width, height, spec, affineFieldGrid, finiteDifferenceEpsilon);
 }
 

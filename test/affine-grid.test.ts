@@ -12,7 +12,7 @@ import {
   createAffineFieldGrid,
   type AffineGridSpec,
 } from "../src/lib/affine-field-grid.js";
-import { createCenteredRadialAffinePair } from "../src/lib/deformation-field.js";
+import { createDualSpiralOctagonAffinePair } from "../src/lib/deformation-field.js";
 import { createBilinearAffineField } from "./support/create-bilinear-affine-field.js";
 
 const defaultSpec: AffineGridSpec = {
@@ -78,7 +78,7 @@ void test("complex arithmetic applies affine pairs in the expected order", () =>
 void test("the generated field is identity at time zero", () => {
   const point = complex(1.25, -0.75);
   const spec = { ...defaultSpec, time: 0 };
-  const field = createBilinearAffineField(spec, createAffineFieldGrid(spec, createCenteredRadialAffinePair));
+  const field = createBilinearAffineField(spec, createAffineFieldGrid(spec, createDualSpiralOctagonAffinePair));
   const sample = field.sample(point.real, point.imag);
 
   approxComplex(sample.a, complex(1, 0), DEFAULT_EPSILON);
@@ -87,7 +87,7 @@ void test("the generated field is identity at time zero", () => {
 });
 
 void test("createBilinearAffineField exposes the generated grid on knot samples", () => {
-  const grid = createAffineFieldGrid(defaultSpec, createCenteredRadialAffinePair);
+  const grid = createAffineFieldGrid(defaultSpec, createDualSpiralOctagonAffinePair);
   const field = createBilinearAffineField(defaultSpec, grid);
   const firstRow = field.grid[0];
   const lastRow = field.grid.at(-1);
@@ -142,7 +142,7 @@ void test("bilinear interpolation blends neighbouring affine pairs smoothly", ()
 });
 
 void test("the generated field interpolates smoothly and clamps outside the domain", () => {
-  const field = createBilinearAffineField(defaultSpec, createAffineFieldGrid(defaultSpec, createCenteredRadialAffinePair));
+  const field = createBilinearAffineField(defaultSpec, createAffineFieldGrid(defaultSpec, createDualSpiralOctagonAffinePair));
   const topRow = field.grid[0];
   const middleRow = field.grid[1];
 
@@ -177,7 +177,7 @@ void test("the generated field interpolates smoothly and clamps outside the doma
 });
 
 void test("createBilinearAffineField exposes interpolated transforms over a generated grid", () => {
-  const field = createBilinearAffineField(defaultSpec, createAffineFieldGrid(defaultSpec, createCenteredRadialAffinePair));
+  const field = createBilinearAffineField(defaultSpec, createAffineFieldGrid(defaultSpec, createDualSpiralOctagonAffinePair));
   const firstRow = field.grid[0];
 
   assert.equal(field.grid.length, defaultSpec.rows);
@@ -186,7 +186,7 @@ void test("createBilinearAffineField exposes interpolated transforms over a gene
 });
 
 void test("invalid specs and mismatched grids are rejected", () => {
-  const referenceGrid = createAffineFieldGrid(defaultSpec, createCenteredRadialAffinePair);
+  const referenceGrid = createAffineFieldGrid(defaultSpec, createDualSpiralOctagonAffinePair);
 
   assert.throws(
     () => createBilinearAffineField({ ...defaultSpec, columns: 1 }, referenceGrid),

@@ -2,26 +2,41 @@
  * Demo entry point: wires the viewport, tracing pipeline, and SVG rendering together.
  */
 import { ContourTracer, type ContourTracerSettings } from "./demo/contour-tracer.js";
-import { createCenteredRadialWarpField, maxWarpedRadius } from "./demo/centered-radial-warp.js";
+import { createDualSpiralWarpField, maxWarpedRadius } from "./demo/dual-spiral-warp.js";
 import { WarpFieldContext } from "./demo/field-context.js";
 import {
   LeafCellCollector,
   smallestLeafCellSize,
   type LeafCellCollectorSettings,
 } from "./demo/leaf-cell-collector.js";
+import { createWarpedOctagonOverlay, type OctagonOverlaySettings } from "./demo/octagon-overlay.js";
 import { SvgContourRenderer } from "./demo/svg-contour-renderer.js";
+import {
+  INNER_OCTAGON_RADIUS,
+  OUTER_OCTAGON_RADIUS,
+} from "./lib/deformation-field.js";
 import type { Axis, Cell, FieldContext, WarpField } from "./demo/types.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const DEFAULT_TIME = 16.0;
-const GRID_OFFSET = 0.5;
+const GRID_LINE_DENSITY_MULTIPLIER = 4;
+const GRID_LINE_SPACING = 1 / GRID_LINE_DENSITY_MULTIPLIER;
+const GRID_LINE_OFFSET = 0.5 * GRID_LINE_SPACING;
 
-const AFFINE_GRID_COLUMNS = 1000;
-const AFFINE_GRID_ROWS = 1000;
+const AFFINE_GRID_RESOLUTION = 1000;
 const AFFINE_GRID_JACOBIAN_EPSILON = 0.75;
 
 const STROKE_WIDTH = 2.2;
 const PATH_DECIMALS = 2;
+
+const octagonOverlaySettings: OctagonOverlaySettings = {
+  outerRadius: OUTER_OCTAGON_RADIUS,
+  innerRadius: INNER_OCTAGON_RADIUS,
+  stroke: "#161616",
+  strokeWidth: 1.6,
+  diagonalOpacity: 0.55,
+  samplesPerSegment: 32,
+};
 
 const leafCellSettings: LeafCellCollectorSettings = {
   maxContourCellSize: 8,
@@ -91,8 +106,8 @@ function lineOffsets(limit: number): number[] {
   const values: number[] = [];
   const start = Math.floor(-limit);
   const end = Math.ceil(limit);
-  for (let index = start; index <= end; index += 1) {
-    values.push(index + GRID_OFFSET);
+  for (let value = start; value <= end; value += GRID_LINE_SPACING) {
+    values.push(value + GRID_LINE_OFFSET);
   }
   return values;
 }
@@ -150,12 +165,12 @@ function render(): void {
   const width = stage.clientWidth;
   const height = stage.clientHeight;
 
-  const warp = createCenteredRadialWarpField(
+  const warp = createDualSpiralWarpField(
     width,
     height,
     currentTime,
-    AFFINE_GRID_COLUMNS,
-    AFFINE_GRID_ROWS,
+    AFFINE_GRID_RESOLUTION,
+    AFFINE_GRID_RESOLUTION,
     AFFINE_GRID_JACOBIAN_EPSILON,
   );
   const field: FieldContext = new WarpFieldContext(warp);
@@ -172,7 +187,7 @@ function render(): void {
   appendContourFamily(horizontalGroup, offsets, "warpedY", "#d4372f", leafCells, field, warp);
   appendContourFamily(verticalGroup, offsets, "warpedX", "#148a45", leafCells, field, warp);
 
-  scene.append(horizontalGroup, verticalGroup);
+  scene.append(horizontalGroup, verticalGroup, createWarpedOctagonOverlay(width, height, warp, octagonOverlaySettings));
   syncTimeControls();
   const offsetCount = String(offsets.length);
   const leafCellCount = String(leafCells.length);
