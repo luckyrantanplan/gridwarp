@@ -26,11 +26,19 @@ export interface Cell {
   readonly bl: ScreenNode;
 }
 
-export interface FieldContext {
+/**
+ * Generic scalar field whose zero level set the contour tracer follows.
+ *
+ * Implementations expose evaluation at arbitrary screen points (used during Newton
+ * projection and tangent following) plus a fast path for a cell corner whose warp
+ * value is already cached, used by the marching-squares seeding step.
+ */
+export interface ScalarField {
   readonly width: number;
   readonly height: number;
-  value(axis: Axis, offset: number, x: number, y: number): number;
-  gradient(axis: Axis, offset: number, x: number, y: number): Point;
+  value(x: number, y: number): number;
+  gradient(x: number, y: number): Point;
+  valueAtNode(node: ScreenNode): number;
 }
 
 export interface TracedComponent {

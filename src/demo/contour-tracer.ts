@@ -1,17 +1,20 @@
 /**
- * Marching-squares seed extraction and contour tracing for the demo warp field.
+ * Marching-squares seed extraction and contour tracing of a generic scalar field.
+ *
+ * Given any `ScalarField`, the tracer extracts seeds from the leaf cells via marching
+ * squares, projects each seed onto the zero level set with Newton iteration, and
+ * follows the field's tangent direction with a midpoint predictor/corrector until the
+ * curve closes or leaves the viewport.
  */
 import { PointBucketIndex } from "./point-bucket-index.js";
 import type {
-  Axis,
   Cell,
-  FieldContext,
   Point,
+  ScalarField,
   ScreenNode,
   Segment,
   TangentSample,
   TracedComponent,
-  WarpField,
 } from "./types.js";
 
 /**
@@ -36,42 +39,31 @@ export interface ContourTracerSettings {
 }
 
 /**
- * Extracts traced contour components from a warp field over adaptive leaf cells.
+ * Extracts traced contour components from any scalar field over adaptive leaf cells.
  */
 export class ContourTracer {
   constructor(private readonly settings: ContourTracerSettings) {}
 
-  traceFamily(
-    offsets: readonly number[],
-    axis: Axis,
-    leafCells: readonly Cell[],
-    field: FieldContext,
-    warp: WarpField,
-  ): TracedComponent[] {
+  /**
+   * Traces every connected component of the zero level set of `field` over `leafCells`.
+   */
+  trace(field: ScalarField, leafCells: readonly Cell[]): TracedComponent[] {
     const components: TracedComponent[] = [];
+    const seeds = this.collectSeedCandidates(field, leafCells);
+    const visitedSeeds = new PointBucketIndex(this.settings.visitedBucketSize);
 
-    for (const offset of offsets) {
-      const seeds = this.collectSeedCandidates(offset, axis, leafCells, warp);
-      const visitedSeeds = new PointBucketIndex(this.settings.visitedBucketSize);
-
-      for (const seed of seeds) {
-        if (visitedSeeds.hasNearby(seed, this.settings.visitedSeedDistance)) continue;
-
-        const component = this.traceContourComponent(field, axis, offset, seed);
-        if (!component) continue;
-
-        for (const sample of component.samples) {
-          visitedSeeds.addPoint(sample);
-        }
-        components.push(component);
-      }
+    for (const seed of seeds) {
+      if (visitedSeeds.hasNearby(seed, this.settings.visitedSeedDistance)) continue;
+      const component = this.traceComponent(field, seed);
+      if (!component) continue;
+      for (const sample of component.samples) visitedSeeds.addPoint(sample);
+      components.push(component);
     }
-
     return components;
   }
 
-  private collectSeedCandidates(offset: number, axis: Axis, leafCells: readonly Cell[], warp: WarpField): Point[] {
-    const segments = this.buildSegmentsForLevel(offset, axis, leafCells, warp);
+  private collectSeedCandidates(field: ScalarField, leafCells: readonly Cell[]): Point[] {
+    const segments = this.buildSegments(field, leafCells);
     const seedIndex = new PointBucketIndex(this.settings.seedDedupDistance * 2);
     const seeds: Point[] = [];
 
@@ -84,24 +76,21 @@ export class ContourTracer {
       seedIndex.addPoint(seed);
       seeds.push(seed);
     }
-
     return seeds;
   }
 
-  private buildSegmentsForLevel(offset: number, axis: Axis, leafCells: readonly Cell[], warp: WarpField): Segment[] {
+  private buildSegments(field: ScalarField, leafCells: readonly Cell[]): Segment[] {
     const segments: Segment[] = [];
-    for (const cell of leafCells) {
-      this.pushCellSegments(segments, cell, axis, offset, warp);
-    }
+    for (const cell of leafCells) this.pushCellSegments(segments, cell, field);
     return segments;
   }
 
-  private pushCellSegments(segments: Segment[], cell: Cell, axis: Axis, offset: number, warp: WarpField): void {
+  private pushCellSegments(segments: Segment[], cell: Cell, field: ScalarField): void {
     const { tl, tr, br, bl } = cell;
-    const vTL = tl[axis] - offset;
-    const vTR = tr[axis] - offset;
-    const vBR = br[axis] - offset;
-    const vBL = bl[axis] - offset;
+    const vTL = field.valueAtNode(tl);
+    const vTR = field.valueAtNode(tr);
+    const vBR = field.valueAtNode(br);
+    const vBL = field.valueAtNode(bl);
 
     const maxV = Math.max(vTL, vTR, vBR, vBL);
     const minV = Math.min(vTL, vTR, vBR, vBL);
@@ -143,7 +132,7 @@ export class ContourTracer {
       case 5: {
         const cx = 0.25 * (tl.screenX + tr.screenX + br.screenX + bl.screenX);
         const cy = 0.25 * (tl.screenY + tr.screenY + br.screenY + bl.screenY);
-        const centreValue = warp.valueAt(cx, cy)[axis] - offset;
+        const centreValue = field.value(cx, cy);
         if (centreValue > 0) {
           segments.push([top(), right()]);
           segments.push([bottom(), left()]);
@@ -156,7 +145,7 @@ export class ContourTracer {
       case 10: {
         const cx = 0.25 * (tl.screenX + tr.screenX + br.screenX + bl.screenX);
         const cy = 0.25 * (tl.screenY + tr.screenY + br.screenY + bl.screenY);
-        const centreValue = warp.valueAt(cx, cy)[axis] - offset;
+        const centreValue = field.value(cx, cy);
         if (centreValue > 0) {
           segments.push([top(), left()]);
           segments.push([bottom(), right()]);
@@ -171,34 +160,28 @@ export class ContourTracer {
     }
   }
 
-  private traceContourComponent(field: FieldContext, axis: Axis, offset: number, seed: Point): TracedComponent | null {
-    const projectedSeed = this.projectToContour(field, axis, offset, seed);
+  private traceComponent(field: ScalarField, seed: Point): TracedComponent | null {
+    const projectedSeed = this.projectToContour(field, seed);
     if (!projectedSeed) return null;
 
-    const seedGradient = field.gradient(axis, offset, projectedSeed.x, projectedSeed.y);
+    const seedGradient = field.gradient(projectedSeed.x, projectedSeed.y);
     if (Math.hypot(seedGradient.x, seedGradient.y) < this.settings.minGradientNorm) return null;
 
     const seedTangent = tangentFromGradient(seedGradient, null);
     if (!seedTangent) return null;
 
     const seedSample: TangentSample = { x: projectedSeed.x, y: projectedSeed.y, tangent: seedTangent };
-    const forward = this.traceDirection(field, axis, offset, seedSample, 1);
+    const forward = this.traceDirection(field, seedSample, 1);
     if (forward.closed) return { closed: true, samples: [seedSample, ...forward.samples] };
 
-    const backward = this.traceDirection(field, axis, offset, seedSample, -1);
+    const backward = this.traceDirection(field, seedSample, -1);
     if (backward.closed) return { closed: true, samples: [seedSample, ...backward.samples] };
 
     const samples = [...reverseSamples(backward.samples), seedSample, ...forward.samples];
     return samples.length > 1 ? { closed: false, samples } : null;
   }
 
-  private traceDirection(
-    field: FieldContext,
-    axis: Axis,
-    offset: number,
-    seedSample: TangentSample,
-    direction: number,
-  ): TracedComponent {
+  private traceDirection(field: ScalarField, seedSample: TangentSample, direction: number): TracedComponent {
     const seedDirectionTangent = {
       x: seedSample.tangent.x * direction,
       y: seedSample.tangent.y * direction,
@@ -221,10 +204,10 @@ export class ContourTracer {
           x: current.x + current.tangent.x * attempt * 0.5,
           y: current.y + current.tangent.y * attempt * 0.5,
         };
-        const projectedMidpoint = this.projectToContour(field, axis, offset, midpointGuess);
+        const projectedMidpoint = this.projectToContour(field, midpointGuess);
         if (!projectedMidpoint) { attempt *= 0.5; continue; }
 
-        const midpointGradient = field.gradient(axis, offset, projectedMidpoint.x, projectedMidpoint.y);
+        const midpointGradient = field.gradient(projectedMidpoint.x, projectedMidpoint.y);
         if (Math.hypot(midpointGradient.x, midpointGradient.y) < this.settings.minGradientNorm) { attempt *= 0.5; continue; }
 
         const midpointTangent = tangentFromGradient(midpointGradient, current.tangent);
@@ -234,10 +217,10 @@ export class ContourTracer {
           x: current.x + midpointTangent.x * attempt,
           y: current.y + midpointTangent.y * attempt,
         };
-        const projected = this.projectToContour(field, axis, offset, predicted);
+        const projected = this.projectToContour(field, predicted);
         if (!projected) { attempt *= 0.5; continue; }
 
-        const gradient = field.gradient(axis, offset, projected.x, projected.y);
+        const gradient = field.gradient(projected.x, projected.y);
         if (Math.hypot(gradient.x, gradient.y) < this.settings.minGradientNorm) { attempt *= 0.5; continue; }
 
         const tangent = tangentFromGradient(gradient, current.tangent);
@@ -279,15 +262,15 @@ export class ContourTracer {
     return { samples, closed: false };
   }
 
-  private projectToContour(field: FieldContext, axis: Axis, offset: number, point: Point): Point | null {
+  private projectToContour(field: ScalarField, point: Point): Point | null {
     let x = point.x;
     let y = point.y;
 
     for (let iteration = 0; iteration < this.settings.maxProjectionIterations; iteration += 1) {
-      const value = field.value(axis, offset, x, y);
+      const value = field.value(x, y);
       if (Math.abs(value) < this.settings.newtonTolerance) return { x, y };
 
-      const gradient = field.gradient(axis, offset, x, y);
+      const gradient = field.gradient(x, y);
       const normSquared = gradient.x * gradient.x + gradient.y * gradient.y;
       if (normSquared < this.settings.minGradientNorm * this.settings.minGradientNorm) return null;
 
@@ -304,7 +287,7 @@ export class ContourTracer {
       y = clamp(y + dy, 0, field.height);
     }
 
-    return Math.abs(field.value(axis, offset, x, y)) < this.settings.newtonTolerance * 4 ? { x, y } : null;
+    return Math.abs(field.value(x, y)) < this.settings.newtonTolerance * 4 ? { x, y } : null;
   }
 }
 
@@ -325,7 +308,7 @@ function tangentFromGradient(gradient: Point, previousTangent: Point | null): Po
   return tangent;
 }
 
-function isOnBoundary(point: Point, field: FieldContext): boolean {
+function isOnBoundary(point: Point, field: ScalarField): boolean {
   return point.x <= 0.5
     || point.x >= field.width - 0.5
     || point.y <= 0.5

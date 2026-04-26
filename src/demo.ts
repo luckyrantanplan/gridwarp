@@ -3,7 +3,6 @@
  */
 import { ContourTracer, type ContourTracerSettings } from "./demo/contour-tracer.js";
 import { createDualSpiralWarpField, maxWarpedRadius } from "./demo/dual-spiral-warp.js";
-import { WarpFieldContext } from "./demo/field-context.js";
 import {
   LeafCellCollector,
   smallestLeafCellSize,
@@ -15,7 +14,8 @@ import {
   INNER_OCTAGON_RADIUS,
   OUTER_OCTAGON_RADIUS,
 } from "./lib/deformation-field.js";
-import type { Axis, Cell, FieldContext, WarpField } from "./demo/types.js";
+import type { Cell, Point, WarpField } from "./demo/types.js";
+import { WarpLinearField } from "./demo/warp-scalar-fields.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const DEFAULT_TIME = 16.0;
@@ -35,7 +35,6 @@ const octagonOverlaySettings: OctagonOverlaySettings = {
   stroke: "#161616",
   strokeWidth: 1.6,
   diagonalOpacity: 0.55,
-  samplesPerSegment: 32,
 };
 
 const leafCellSettings: LeafCellCollectorSettings = {
@@ -115,15 +114,17 @@ function lineOffsets(limit: number): number[] {
 function appendContourFamily(
   group: SVGGElement,
   offsets: readonly number[],
-  axis: Axis,
+  normal: Point,
   stroke: string,
   leafCells: readonly Cell[],
-  field: FieldContext,
   warp: WarpField,
 ): void {
-  const components = contourTracer.traceFamily(offsets, axis, leafCells, field, warp);
-  for (const component of components) {
-    group.appendChild(contourRenderer.createPathElement(component, stroke));
+  for (const offset of offsets) {
+    const field = new WarpLinearField(warp, normal, offset);
+    const components = contourTracer.trace(field, leafCells);
+    for (const component of components) {
+      group.appendChild(contourRenderer.createPathElement(component, stroke));
+    }
   }
 }
 
@@ -173,7 +174,6 @@ function render(): void {
     AFFINE_GRID_RESOLUTION,
     AFFINE_GRID_JACOBIAN_EPSILON,
   );
-  const field: FieldContext = new WarpFieldContext(warp);
   const leafCells: Cell[] = new LeafCellCollector(width, height, warp, leafCellSettings).collect();
 
   scene.setAttribute("viewBox", `0 0 ${String(width)} ${String(height)}`);
@@ -184,10 +184,14 @@ function render(): void {
   const horizontalGroup = document.createElementNS(SVG_NS, "g");
   const verticalGroup = document.createElementNS(SVG_NS, "g");
 
-  appendContourFamily(horizontalGroup, offsets, "warpedY", "#d4372f", leafCells, field, warp);
-  appendContourFamily(verticalGroup, offsets, "warpedX", "#148a45", leafCells, field, warp);
+  appendContourFamily(horizontalGroup, offsets, { x: 0, y: 1 }, "#d4372f", leafCells, warp);
+  appendContourFamily(verticalGroup, offsets, { x: 1, y: 0 }, "#148a45", leafCells, warp);
 
-  scene.append(horizontalGroup, verticalGroup, createWarpedOctagonOverlay(width, height, warp, octagonOverlaySettings));
+  scene.append(
+    horizontalGroup,
+    verticalGroup,
+    createWarpedOctagonOverlay(warp, leafCells, contourTracer, contourRenderer, octagonOverlaySettings),
+  );
   syncTimeControls();
   const offsetCount = String(offsets.length);
   const leafCellCount = String(leafCells.length);
