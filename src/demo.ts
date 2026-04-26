@@ -1,85 +1,24 @@
 import {
-  complex,
-  createBilinearAffineField as createAffineGridHandle,
+  createAffineFieldGrid,
   type AffineGridSpec,
-} from "./lib/affine-grid.js";
-
-interface Point {
-  readonly x: number;
-  readonly y: number;
-}
-
-interface TangentSample extends Point {
-  readonly tangent: Point;
-}
-
-interface WarpValue {
-  readonly warpedX: number;
-  readonly warpedY: number;
-}
-
-interface Jacobian {
-  readonly xx: number;
-  readonly xy: number;
-  readonly yx: number;
-  readonly yy: number;
-}
-
-interface Bounds {
-  readonly width: number;
-  readonly height: number;
-}
-
-interface WarpField {
-  valueAt(screenX: number, screenY: number): WarpValue;
-  jacobianAt(screenX: number, screenY: number): Jacobian;
-  bounds(): Bounds;
-}
-
-interface ValueOnlyWarpField {
-  valueAt(screenX: number, screenY: number): WarpValue;
-  bounds(): Bounds;
-}
-
-interface ScreenNode extends WarpValue {
-  readonly screenX: number;
-  readonly screenY: number;
-}
-
-interface Cell {
-  readonly tl: ScreenNode;
-  readonly tr: ScreenNode;
-  readonly br: ScreenNode;
-  readonly bl: ScreenNode;
-}
-
-interface FieldContext {
-  readonly width: number;
-  readonly height: number;
-  value(axis: Axis, offset: number, x: number, y: number): number;
-  gradient(axis: Axis, offset: number, x: number, y: number): Point;
-}
-
-interface TracedComponent {
-  readonly closed: boolean;
-  readonly samples: TangentSample[];
-}
-
-interface PointIndex {
-  hasNearby(point: Point, maxDistance: number): boolean;
-  addPoint(point: Point): void;
-}
-
-interface BilinearAffineFieldConfig {
-  readonly width: number;
-  readonly height: number;
-  readonly time: number;
-  readonly columns: number;
-  readonly rows: number;
-}
-
-type Axis = keyof WarpValue;
-type Segment = readonly [Point, Point];
+} from "./lib/affine-field-grid.js";
+import { createCenteredRadialAffinePair } from "./lib/deformation-field.js";
+import { AffineGridWarpField } from "./lib/warp-field.js";
+import { WarpFieldContext } from "./demo/field-context.js";
+import { LeafCellCollector, LeafCellCollectorSettings } from "./demo/leaf-cell-collector.js";
+import { PointBucketIndex } from "./demo/point-bucket-index.js";
+import { SvgContourRenderer } from "./demo/svg-contour-renderer.js";
+import type {
+  Axis,
+  Cell,
+  FieldContext,
+  Point,
+  ScreenNode,
+  Segment,
+  TangentSample,
+  TracedComponent,
+  WarpField,
+} from "./demo/types.js";
 
 // Adaptive seed grid.
 const DEFAULT_TIME = 16.0;
@@ -112,6 +51,14 @@ const PATH_DECIMALS = 2;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const AFFINE_GRID_COLUMNS = 1000;
 const AFFINE_GRID_ROWS = 1000;
+const AFFINE_GRID_JACOBIAN_EPSILON = 0.75;
+const leafCellCollectorSettings = new LeafCellCollectorSettings(
+  MAX_CONTOUR_CELL_SIZE,
+  MIN_CONTOUR_CELL_SIZE,
+  MAX_ADAPTIVE_DEPTH,
+  CURVATURE_ERROR_THRESHOLD,
+);
+const contourRenderer = new SvgContourRenderer(STROKE_WIDTH, PATH_DECIMALS);
 
 const scene = getRequiredElement("scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const caption = getRequiredElement("caption", (element): element is HTMLDivElement => element instanceof HTMLDivElement);
@@ -184,147 +131,25 @@ function reverseSamples(samples: readonly TangentSample[]): TangentSample[] {
   }));
 }
 
-// ---------------------------------------------------------------------------
-// Warp field abstraction.
-// ---------------------------------------------------------------------------
-
-function withFiniteDifferenceJacobian(warpField: ValueOnlyWarpField, epsilon = 0.75): WarpField {
-  const { width, height } = warpField.bounds();
-  return {
-    valueAt: (x: number, y: number) => warpField.valueAt(x, y),
-    jacobianAt(x: number, y: number): Jacobian {
-      const x0 = clamp(x - epsilon, 0, width);
-      const x1 = clamp(x + epsilon, 0, width);
-      const y0 = clamp(y - epsilon, 0, height);
-      const y1 = clamp(y + epsilon, 0, height);
-      const sx1 = warpField.valueAt(x1, y);
-      const sx0 = warpField.valueAt(x0, y);
-      const sy1 = warpField.valueAt(x, y1);
-      const sy0 = warpField.valueAt(x, y0);
-      const dx = Math.max(1e-6, x1 - x0);
-      const dy = Math.max(1e-6, y1 - y0);
-      return {
-        xx: (sx1.warpedX - sx0.warpedX) / dx,
-        xy: (sy1.warpedX - sy0.warpedX) / dy,
-        yx: (sx1.warpedY - sx0.warpedY) / dx,
-        yy: (sy1.warpedY - sy0.warpedY) / dy,
-      };
-    },
-    bounds: () => ({ width, height }),
-  };
-}
-
-function createCenteredRadialWarp(width: number, height: number, time: number): WarpField {
-  const planeScale = height / 10;
-
-  function toPlane(x: number, y: number): Point {
-    return {
-      x: (x - width * 0.5) / planeScale,
-      y: (height * 0.5 - y) / planeScale,
-    };
-  }
-
-  function radialCoefficients(radius: number): { angle: number; sigma: number; sigmaROverR: number; thetaROverR: number } {
-    const weight = Math.exp(-0.16 * radius * radius);
-    const angle = time * (0.0022 + 0.01 * weight) * weight;
-    const pullBase = time * (0.015 + 0.075 * weight);
-    const u = 1 + pullBase * weight;
-    const softness = 0.2;
-    const ttRaw = (u - 3 + softness) / (2 * softness);
-    const tt = clamp(ttRaw, 0, 1);
-    const h = tt * tt * tt * (tt * (tt * 6 - 15) + 10);
-    const sigma = u + h * (3 - u);
-
-    const wOverR = -0.32 * weight;
-    const uROverR = wOverR * time * (0.015 + 0.15 * weight);
-    const thetaROverR = wOverR * time * (0.0022 + 0.02 * weight);
-
-    let bracket = 1 - h;
-    if (ttRaw > 0 && ttRaw < 1) {
-      const dhdtt = 30 * tt * tt * (1 - tt) * (1 - tt);
-      bracket += (3 - u) * dhdtt / (2 * softness);
-    }
-    const sigmaROverR = uROverR * bracket;
-
-    return { angle, sigma, sigmaROverR, thetaROverR };
-  }
-
-  function valueAt(x: number, y: number): WarpValue {
-    const p = toPlane(x, y);
-    const r = Math.hypot(p.x, p.y);
-    const { angle, sigma } = radialCoefficients(r);
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    return {
-      warpedX: sigma * (cosA * p.x - sinA * p.y),
-      warpedY: sigma * (sinA * p.x + cosA * p.y),
-    };
-  }
-
-  function jacobianAt(x: number, y: number): Jacobian {
-    const p = toPlane(x, y);
-    const r = Math.hypot(p.x, p.y);
-    const { angle, sigma, sigmaROverR, thetaROverR } = radialCoefficients(r);
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-
-    const rhoX = cosA * p.x - sinA * p.y;
-    const rhoY = sinA * p.x + cosA * p.y;
-    const rPerpPX = -cosA * p.y - sinA * p.x;
-    const rPerpPY = -sinA * p.y + cosA * p.x;
-
-    const kx = sigmaROverR * rhoX + sigma * thetaROverR * rPerpPX;
-    const ky = sigmaROverR * rhoY + sigma * thetaROverR * rPerpPY;
-
-    const jPlaneXX = sigma * cosA + kx * p.x;
-    const jPlaneXY = -sigma * sinA + kx * p.y;
-    const jPlaneYX = sigma * sinA + ky * p.x;
-    const jPlaneYY = sigma * cosA + ky * p.y;
-
-    const invS = 1 / planeScale;
-    return {
-      xx: jPlaneXX * invS,
-      xy: -jPlaneXY * invS,
-      yx: jPlaneYX * invS,
-      yy: -jPlaneYY * invS,
-    };
-  }
-
-  return {
-    valueAt,
-    jacobianAt,
-    bounds: () => ({ width, height }),
-  };
-}
-
-function createBilinearAffineField(config: BilinearAffineFieldConfig): WarpField {
-  const planeScale = config.height / 10;
-  const { xMax, yMax } = visibleBounds(config.width, config.height);
+function createBilinearAffineWarpField(
+  width: number,
+  height: number,
+  time: number,
+  columns: number,
+  rows: number,
+): WarpField {
+  const { xMax, yMax } = visibleBounds(width, height);
   const spec: AffineGridSpec = {
-    columns: config.columns,
-    rows: config.rows,
+    columns,
+    rows,
     minReal: -xMax,
     maxReal: xMax,
     minImag: -yMax,
     maxImag: yMax,
-    time: config.time,
+    time,
   };
-  const handle = createAffineGridHandle(spec);
-
-  return withFiniteDifferenceJacobian({
-    valueAt(x: number, y: number): WarpValue {
-      const planePoint = {
-        x: (x - config.width * 0.5) / planeScale,
-        y: (config.height * 0.5 - y) / planeScale,
-      };
-      const warped = handle.transform(complex(planePoint.x, planePoint.y), planePoint.x, planePoint.y);
-      return {
-        warpedX: warped.real,
-        warpedY: warped.imag,
-      };
-    },
-    bounds: () => ({ width: config.width, height: config.height }),
-  });
+  const affineFieldGrid = createAffineFieldGrid(spec, createCenteredRadialAffinePair);
+  return new AffineGridWarpField(width, height, spec, affineFieldGrid, AFFINE_GRID_JACOBIAN_EPSILON);
 }
 
 // ---------------------------------------------------------------------------
@@ -338,16 +163,15 @@ function visibleBounds(width: number, height: number): { xMax: number; yMax: num
   };
 }
 
-function maxWarpedRadius(width: number, height: number, time: number): number {
+function maxWarpedRadius(width: number, height: number, warp: WarpField): number {
   const { xMax, yMax } = visibleBounds(width, height);
-  const probe = createCenteredRadialWarp(width, height, time);
   const planeScale = height / 10;
   let maximum = 0;
   for (let step = 0; step <= 256; step += 1) {
     const t = step / 256;
     const screenX = width * 0.5 + planeScale * t * xMax;
     const screenY = height * 0.5 - planeScale * t * yMax;
-    const v = probe.valueAt(screenX, screenY);
+    const v = warp.valueAt(screenX, screenY);
     maximum = Math.max(maximum, Math.hypot(v.warpedX, v.warpedY));
   }
   return maximum + 1;
@@ -361,110 +185,6 @@ function lineOffsets(limit: number): number[] {
     values.push(index + GRID_OFFSET);
   }
   return values;
-}
-
-function coordinateAxis(length: number, cellSize: number): number[] {
-  const steps = Math.max(2, Math.ceil(length / cellSize));
-  const coordinates: number[] = [];
-  for (let index = 0; index <= steps; index += 1) {
-    coordinates.push(length * index / steps);
-  }
-  return coordinates;
-}
-
-// ---------------------------------------------------------------------------
-// Quadtree of leaf cells
-// ---------------------------------------------------------------------------
-
-function sampleNode(warp: WarpField, x: number, y: number): ScreenNode {
-  const v = warp.valueAt(x, y);
-  return { screenX: x, screenY: y, warpedX: v.warpedX, warpedY: v.warpedY };
-}
-
-function axisCurvatureError(
-  topLeft: ScreenNode,
-  topRight: ScreenNode,
-  bottomRight: ScreenNode,
-  bottomLeft: ScreenNode,
-  topMid: ScreenNode,
-  rightMid: ScreenNode,
-  bottomMid: ScreenNode,
-  leftMid: ScreenNode,
-  center: ScreenNode,
-  axis: Axis,
-): number {
-  return Math.max(
-    Math.abs(center[axis] - 0.25 * (topLeft[axis] + topRight[axis] + bottomRight[axis] + bottomLeft[axis])),
-    Math.abs(topMid[axis] - 0.5 * (topLeft[axis] + topRight[axis])),
-    Math.abs(rightMid[axis] - 0.5 * (topRight[axis] + bottomRight[axis])),
-    Math.abs(bottomMid[axis] - 0.5 * (bottomLeft[axis] + bottomRight[axis])),
-    Math.abs(leftMid[axis] - 0.5 * (topLeft[axis] + bottomLeft[axis])),
-  );
-}
-
-function collectLeafCells(width: number, height: number, warp: WarpField): Cell[] {
-  const xCoords = coordinateAxis(width, MAX_CONTOUR_CELL_SIZE);
-  const yCoords = coordinateAxis(height, MAX_CONTOUR_CELL_SIZE);
-  const rows = yCoords.length - 1;
-  const cols = xCoords.length - 1;
-
-  const baseNodes: ScreenNode[][] = [];
-  for (let row = 0; row <= rows; row += 1) {
-    const nodeRow: ScreenNode[] = [];
-    for (let col = 0; col <= cols; col += 1) {
-      nodeRow.push(sampleNode(warp, xCoords[col], yCoords[row]));
-    }
-    baseNodes.push(nodeRow);
-  }
-
-  const leafCells: Cell[] = [];
-
-  function refineCell(tl: ScreenNode, tr: ScreenNode, br: ScreenNode, bl: ScreenNode, depth: number): void {
-    const cellWidth = tr.screenX - tl.screenX;
-    const cellHeight = bl.screenY - tl.screenY;
-
-    if (depth >= MAX_ADAPTIVE_DEPTH || Math.max(cellWidth, cellHeight) * 0.5 < MIN_CONTOUR_CELL_SIZE) {
-      leafCells.push({ tl, tr, br, bl });
-      return;
-    }
-
-    const midX = 0.5 * (tl.screenX + tr.screenX);
-    const midY = 0.5 * (tl.screenY + bl.screenY);
-    const topMid = sampleNode(warp, midX, tl.screenY);
-    const rightMid = sampleNode(warp, tr.screenX, midY);
-    const bottomMid = sampleNode(warp, midX, bl.screenY);
-    const leftMid = sampleNode(warp, tl.screenX, midY);
-    const center = sampleNode(warp, midX, midY);
-
-    const curvature = Math.max(
-      axisCurvatureError(tl, tr, br, bl, topMid, rightMid, bottomMid, leftMid, center, "warpedX"),
-      axisCurvatureError(tl, tr, br, bl, topMid, rightMid, bottomMid, leftMid, center, "warpedY"),
-    );
-
-    if (curvature <= CURVATURE_ERROR_THRESHOLD) {
-      leafCells.push({ tl, tr, br, bl });
-      return;
-    }
-
-    refineCell(tl, topMid, center, leftMid, depth + 1);
-    refineCell(topMid, tr, rightMid, center, depth + 1);
-    refineCell(center, rightMid, br, bottomMid, depth + 1);
-    refineCell(leftMid, center, bottomMid, bl, depth + 1);
-  }
-
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      refineCell(
-        baseNodes[row][col],
-        baseNodes[row][col + 1],
-        baseNodes[row + 1][col + 1],
-        baseNodes[row + 1][col],
-        1,
-      );
-    }
-  }
-
-  return leafCells;
 }
 
 // ---------------------------------------------------------------------------
@@ -563,67 +283,8 @@ function buildSegmentsForLevel(offset: number, axis: Axis, leafCells: readonly C
 }
 
 // ---------------------------------------------------------------------------
-// Seed deduplication
-// ---------------------------------------------------------------------------
-
-function createPointIndex(bucketSize: number): PointIndex {
-  const buckets = new Map<string, Point[]>();
-
-  function baseBucket(point: Point): Point {
-    return { x: Math.floor(point.x / bucketSize), y: Math.floor(point.y / bucketSize) };
-  }
-
-  function bucketKey(xBucket: number, yBucket: number): string {
-    return `${String(xBucket)},${String(yBucket)}`;
-  }
-
-  return {
-    hasNearby(point: Point, maxDistance: number): boolean {
-      const bucket = baseBucket(point);
-      for (let dx = -1; dx <= 1; dx += 1) {
-        for (let dy = -1; dy <= 1; dy += 1) {
-          const entries = buckets.get(bucketKey(bucket.x + dx, bucket.y + dy));
-          if (!entries) continue;
-          for (const otherPoint of entries) {
-            if (distance(point, otherPoint) <= maxDistance) return true;
-          }
-        }
-      }
-      return false;
-    },
-    addPoint(point: Point): void {
-      const bucket = baseBucket(point);
-      const key = bucketKey(bucket.x, bucket.y);
-      const list = buckets.get(key);
-      if (list) {
-        list.push({ x: point.x, y: point.y });
-        return;
-      }
-      buckets.set(key, [{ x: point.x, y: point.y }]);
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Field adapter + contour tracer
 // ---------------------------------------------------------------------------
-
-function createFieldContext(warp: WarpField): FieldContext {
-  const { width, height } = warp.bounds();
-  return {
-    width,
-    height,
-    value(axis: Axis, offset: number, x: number, y: number): number {
-      return warp.valueAt(clamp(x, 0, width), clamp(y, 0, height))[axis] - offset;
-    },
-    gradient(axis: Axis, offset: number, x: number, y: number): Point {
-      const j = warp.jacobianAt(clamp(x, 0, width), clamp(y, 0, height));
-      return axis === "warpedX"
-        ? { x: j.xx, y: j.xy }
-        : { x: j.yx, y: j.yy };
-    },
-  };
-}
 
 function projectToContour(field: FieldContext, axis: Axis, offset: number, point: Point): Point | null {
   let x = point.x;
@@ -777,7 +438,7 @@ function traceContourComponent(field: FieldContext, axis: Axis, offset: number, 
 
 function collectSeedCandidates(offset: number, axis: Axis, leafCells: readonly Cell[], warp: WarpField): Point[] {
   const segments = buildSegmentsForLevel(offset, axis, leafCells, warp);
-  const seedIndex = createPointIndex(SEED_DEDUP_DISTANCE * 2);
+  const seedIndex = new PointBucketIndex(SEED_DEDUP_DISTANCE * 2);
   const seeds: Point[] = [];
   for (const [startPoint, endPoint] of segments) {
     const seed = {
@@ -791,97 +452,6 @@ function collectSeedCandidates(offset: number, axis: Axis, leafCells: readonly C
   return seeds;
 }
 
-// ---------------------------------------------------------------------------
-// SVG output
-// ---------------------------------------------------------------------------
-
-function formatNumber(value: number): string {
-  return value.toFixed(PATH_DECIMALS);
-}
-
-function rotateSamples(samples: readonly TangentSample[], startIndex: number): TangentSample[] {
-  return samples.slice(startIndex).concat(samples.slice(0, startIndex));
-}
-
-function directionBetween(start: Point, end: Point): Point | null {
-  return normalize({ x: end.x - start.x, y: end.y - start.y });
-}
-
-function sampleTurnAngle(previousPoint: Point, point: Point, nextPoint: Point): number {
-  const incoming = directionBetween(previousPoint, point);
-  const outgoing = directionBetween(point, nextPoint);
-  if (!incoming || !outgoing) return Math.PI;
-  return Math.acos(clamp(dot(incoming, outgoing), -1, 1));
-}
-
-function chooseClosedPathSeam(samples: readonly TangentSample[]): number {
-  if (samples.length < 3) return 0;
-  let bestIndex = 0;
-  let bestTurn = Infinity;
-  for (let index = 0; index < samples.length; index += 1) {
-    const previous = samples[(index - 1 + samples.length) % samples.length];
-    const current = samples[index];
-    const next = samples[(index + 1) % samples.length];
-    const turn = sampleTurnAngle(previous, current, next);
-    if (turn < bestTurn) {
-      bestTurn = turn;
-      bestIndex = index;
-    }
-  }
-  return bestIndex;
-}
-
-function preparePathSamples(component: TracedComponent): TangentSample[] {
-  if (!component.closed) return component.samples;
-  const seamIndex = chooseClosedPathSeam(component.samples);
-  const rotated = rotateSamples(component.samples, seamIndex);
-  const first = rotated[0];
-  return [
-    ...rotated,
-    { x: first.x, y: first.y, tangent: { x: first.tangent.x, y: first.tangent.y } },
-  ];
-}
-
-function createPathData(component: TracedComponent): string {
-  const samples = preparePathSamples(component);
-  if (samples.length < 2) return "";
-
-  let pathData = `M ${formatNumber(samples[0].x)} ${formatNumber(samples[0].y)}`;
-  const segmentCount = samples.length - 1;
-
-  for (let index = 0; index < segmentCount; index += 1) {
-    const start = samples[index];
-    const end = samples[index + 1];
-    const segmentLength = distance(start, end);
-    const handleLength = segmentLength / 3;
-    const control1 = {
-      x: start.x + start.tangent.x * handleLength,
-      y: start.y + start.tangent.y * handleLength,
-    };
-    const control2 = {
-      x: end.x - end.tangent.x * handleLength,
-      y: end.y - end.tangent.y * handleLength,
-    };
-    pathData += ` C ${formatNumber(control1.x)} ${formatNumber(control1.y)} ${formatNumber(control2.x)} ${formatNumber(control2.y)} ${formatNumber(end.x)} ${formatNumber(end.y)}`;
-  }
-
-  if (component.closed) pathData += " Z";
-  return pathData;
-}
-
-function createPathElement(component: TracedComponent, stroke: string): SVGPathElement {
-  const path = document.createElementNS(SVG_NS, "path");
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", stroke);
-  path.setAttribute("stroke-width", String(STROKE_WIDTH));
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  path.setAttribute("vector-effect", "non-scaling-stroke");
-  path.dataset.closed = String(component.closed);
-  path.setAttribute("d", createPathData(component));
-  return path;
-}
-
 function appendContourFamily(
   group: SVGGElement,
   offsets: readonly number[],
@@ -893,7 +463,7 @@ function appendContourFamily(
 ): void {
   for (const offset of offsets) {
     const seeds = collectSeedCandidates(offset, axis, leafCells, warp);
-    const visitedSeeds = createPointIndex(VISITED_BUCKET_SIZE);
+    const visitedSeeds = new PointBucketIndex(VISITED_BUCKET_SIZE);
 
     for (const seed of seeds) {
       if (visitedSeeds.hasNearby(seed, VISITED_SEED_DISTANCE)) continue;
@@ -904,7 +474,7 @@ function appendContourFamily(
       for (const sample of component.samples) {
         visitedSeeds.addPoint(sample);
       }
-      group.appendChild(createPathElement(component, stroke));
+      group.appendChild(contourRenderer.createPathElement(component, stroke));
     }
   }
 }
@@ -957,20 +527,20 @@ function render(): void {
   const width = stage.clientWidth;
   const height = stage.clientHeight;
 
-  const warp = createBilinearAffineField({
+  const warp = createBilinearAffineWarpField(
     width,
     height,
-    time: currentTime,
-    columns: AFFINE_GRID_COLUMNS,
-    rows: AFFINE_GRID_ROWS,
-  });
-  const field = createFieldContext(warp);
-  const leafCells = collectLeafCells(width, height, warp);
+    currentTime,
+    AFFINE_GRID_COLUMNS,
+    AFFINE_GRID_ROWS,
+  );
+  const field: FieldContext = new WarpFieldContext(warp);
+  const leafCells: Cell[] = new LeafCellCollector(width, height, warp, leafCellCollectorSettings).collect();
 
   scene.setAttribute("viewBox", `0 0 ${String(width)} ${String(height)}`);
   scene.replaceChildren();
 
-  const limit = maxWarpedRadius(width, height, currentTime);
+  const limit = maxWarpedRadius(width, height, warp);
   const offsets = lineOffsets(limit);
   const horizontalGroup = document.createElementNS(SVG_NS, "g");
   const verticalGroup = document.createElementNS(SVG_NS, "g");
