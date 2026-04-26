@@ -3,9 +3,9 @@
  * contour-tracing pipeline.
  *
  * Each overlay edge is still traced as the preimage of its supporting line, but the
- * finite segment topology is enforced after tracing: only endpoint-to-endpoint runs
- * are renderable, octagon rings are assembled as one coherent cycle, and ring edges
- * snap adjacent endpoints to shared vertices.
+ * finite segment topology is enforced after tracing in output-space segment
+ * coordinates. Every clipped preimage run is rendered, including disconnected extra
+ * images and fully in-range closed loops that appear once the warp folds.
  */
 import type { ContourTracer } from "./contour-tracer.js";
 import type { SvgContourRenderer } from "./svg-contour-renderer.js";
@@ -15,7 +15,8 @@ import { WarpLinearField } from "./warp-scalar-fields.js";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SEGMENT_RANGE_EPSILON = 1e-6;
 const MAX_ENDPOINT_SNAP_DISTANCE = 24;
-const RING_JOIN_SCORE_WEIGHT = 20;
+const MAX_RING_JOIN_DISTANCE = 40;
+const MAX_RING_ENDPOINT_CLUSTER_DISTANCE = 16;
 const ENDPOINT_SOLVER_TOLERANCE = 1e-3;
 const ENDPOINT_SOLVER_MAX_DISPLACEMENT = 48;
 const ENDPOINT_SOLVER_ITERATIONS = 60;
@@ -26,6 +27,7 @@ export interface OctagonOverlaySettings {
   readonly stroke: string;
   readonly strokeWidth: number;
   readonly diagonalOpacity: number;
+  readonly showDiagonals?: boolean;
 }
 
 interface PlaneSegment {
@@ -47,13 +49,6 @@ interface ClipRun {
   readonly clippedAtEnd: boolean;
 }
 
-interface SegmentCandidate {
-  readonly component: TracedComponent;
-  readonly length: number;
-  readonly start: TangentSample;
-  readonly end: TangentSample;
-}
-
 /**
  * Builds an SVG group containing the warped outer octagon, inner octagon, and four diagonals.
  */
@@ -67,14 +62,15 @@ export function createWarpedOctagonOverlay(
   const group = createOverlayGroup(settings.stroke, settings.strokeWidth);
   const endpointSolver = new EndpointSolver(warp);
 
-  appendOctagon(group, settings.outerRadius, warp, leafCells, tracer, renderer, settings.stroke);
-  appendOctagon(group, settings.innerRadius, warp, leafCells, tracer, renderer, settings.stroke);
+  appendOctagon(group, settings.outerRadius, warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
+  appendOctagon(group, settings.innerRadius, warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
+
+  if (settings.showDiagonals === false) return group;
 
   const diagonals = createOverlayGroup(settings.stroke, settings.strokeWidth);
   diagonals.setAttribute("opacity", String(settings.diagonalOpacity));
   for (const segment of octagonDiagonals(settings.outerRadius)) {
-    const component = traceSegment(segment, warp, leafCells, tracer, endpointSolver);
-    if (component) diagonals.appendChild(renderer.createPathElement(component, settings.stroke));
+    appendSegmentImages(diagonals, segment, warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
   }
   group.appendChild(diagonals);
 
@@ -86,8 +82,8 @@ function createOverlayGroup(stroke: string, strokeWidth: number): SVGGElement {
   group.setAttribute("fill", "none");
   group.setAttribute("stroke", stroke);
   group.setAttribute("stroke-width", String(strokeWidth));
-  group.setAttribute("stroke-linecap", "round");
-  group.setAttribute("stroke-linejoin", "round");
+  group.setAttribute("stroke-linecap", "butt");
+  group.setAttribute("stroke-linejoin", "miter");
   group.setAttribute("vector-effect", "non-scaling-stroke");
   return group;
 }
@@ -100,15 +96,20 @@ function appendOctagon(
   tracer: ContourTracer,
   renderer: SvgContourRenderer,
   stroke: string,
+  endpointSolver: EndpointSolver,
 ): void {
-  const edgeCandidates = octagonEdges(radius)
-    .map(segmentGeometry)
-    .filter((geometry): geometry is SegmentGeometry => geometry !== null)
-    .map((geometry) => traceSegmentCandidates(geometry, warp, leafCells, tracer, null, null, false));
-  const components = selectRingBranches(edgeCandidates);
-  snapRingEndpoints(components);
-  for (const component of components) {
-    if (component) parent.appendChild(renderer.createPathElement(component, stroke));
+  const edgeImages = octagonEdges(radius).map((segment) => traceSegmentImages(
+    segment,
+    warp,
+    leafCells,
+    tracer,
+    endpointSolver,
+  ));
+  snapOctagonEdgeJoins(edgeImages);
+  snapNearbyOpenEndpoints(edgeImages.flat());
+
+  for (const components of edgeImages) {
+    appendComponents(parent, components, renderer, stroke);
   }
 }
 
@@ -140,19 +141,46 @@ function octagonDiagonals(outerRadius: number): PlaneSegment[] {
   return segments;
 }
 
-function traceSegment(
+function appendSegmentImages(
+  parent: SVGGElement,
+  segment: PlaneSegment,
+  warp: WarpField,
+  leafCells: readonly Cell[],
+  tracer: ContourTracer,
+  renderer: SvgContourRenderer,
+  stroke: string,
+  endpointSolver: EndpointSolver,
+): void {
+  const geometry = segmentGeometry(segment);
+  if (!geometry) return;
+
+  appendComponents(parent, traceSegmentImages(segment, warp, leafCells, tracer, endpointSolver), renderer, stroke);
+}
+
+function traceSegmentImages(
   segment: PlaneSegment,
   warp: WarpField,
   leafCells: readonly Cell[],
   tracer: ContourTracer,
   endpointSolver: EndpointSolver,
-): TracedComponent | null {
+): TracedComponent[] {
   const geometry = segmentGeometry(segment);
-  if (!geometry) return null;
+  if (!geometry) return [];
 
   const startPoint = endpointSolver.solve(segment.start);
   const endPoint = endpointSolver.solve(segment.end);
-  return selectShortestBranch(traceSegmentCandidates(geometry, warp, leafCells, tracer, startPoint, endPoint, true));
+  return traceSegmentCandidates(geometry, warp, leafCells, tracer, startPoint, endPoint);
+}
+
+function appendComponents(
+  parent: SVGGElement,
+  components: readonly TracedComponent[],
+  renderer: SvgContourRenderer,
+  stroke: string,
+): void {
+  for (const component of components) {
+    parent.appendChild(createOverlayPathElement(renderer, component, stroke));
+  }
 }
 
 function traceSegmentCandidates(
@@ -162,7 +190,6 @@ function traceSegmentCandidates(
   tracer: ContourTracer,
   startPoint: Point | null,
   endPoint: Point | null,
-  requireEndpointProximity: boolean,
 ): TracedComponent[] {
   const field = new WarpLinearField(warp, geometry.normal, geometry.lineOffset);
   const candidates: TracedComponent[] = [];
@@ -176,7 +203,6 @@ function traceSegmentCandidates(
       geometry.endParameter,
       startPoint,
       endPoint,
-      requireEndpointProximity,
     ));
   }
 
@@ -208,10 +234,13 @@ function clipComponentToRange(
   endParameter: number,
   startPoint: Point | null,
   endPoint: Point | null,
-  requireEndpointProximity: boolean,
 ): TracedComponent[] {
   const minParameter = Math.min(startParameter, endParameter);
   const maxParameter = Math.max(startParameter, endParameter);
+  if (component.closed && component.samples.every((sample) => isParameterInRange(sampleParameter(sample, warp, direction), minParameter, maxParameter))) {
+    return [{ closed: true, samples: component.samples.slice() }];
+  }
+
   const samples = component.closed ? [...component.samples, component.samples[0]] : component.samples;
   const runs = collectClipRuns(samples, warp, direction, minParameter, maxParameter);
 
@@ -219,13 +248,11 @@ function clipComponentToRange(
   for (const run of runs) {
     if (run.samples.length < 2) continue;
     const oriented = orientRun(run, startParameter <= endParameter);
-    if (!isEndpointToEndpointRun(oriented)) continue;
-    if (requireEndpointProximity && (!isNearEndpoint(oriented.samples[0], startPoint) || !isNearEndpoint(oriented.samples[oriented.samples.length - 1], endPoint))) {
-      continue;
-    }
+    const snappedStart = chooseSnapPoint(oriented.samples[0], startPoint);
+    const snappedEnd = chooseSnapPoint(oriented.samples[oriented.samples.length - 1], endPoint);
     clippedComponents.push({
       closed: false,
-      samples: snapRunEndpoints(oriented.samples, oriented.clippedAtStart ? startPoint : null, oriented.clippedAtEnd ? endPoint : null),
+      samples: snapRunEndpoints(oriented.samples, snappedStart, snappedEnd),
     });
   }
   return clippedComponents;
@@ -245,8 +272,7 @@ function collectClipRuns(
 
   for (const sample of samples) {
     const parameter = sampleParameter(sample, warp, direction);
-    const inRange = parameter >= minParameter - SEGMENT_RANGE_EPSILON
-      && parameter <= maxParameter + SEGMENT_RANGE_EPSILON;
+    const inRange = isParameterInRange(parameter, minParameter, maxParameter);
     if (inRange) {
       if (currentSamples.length === 0) currentClippedAtStart = sawOutOfRange;
       currentSamples.push(sample);
@@ -276,130 +302,117 @@ function orientRun(run: ClipRun, forward: boolean): ClipRun {
   };
 }
 
-function isEndpointToEndpointRun(run: ClipRun): boolean {
-  return run.clippedAtStart && run.clippedAtEnd;
+function createOverlayPathElement(renderer: SvgContourRenderer, component: TracedComponent, stroke: string): SVGPathElement {
+  const path = renderer.createPathElement(component, stroke);
+  path.setAttribute("stroke-linecap", "butt");
+  path.setAttribute("stroke-linejoin", component.closed ? "miter" : "bevel");
+  return path;
 }
 
-function isNearEndpoint(sample: TangentSample, endpoint: Point | null): boolean {
-  return endpoint === null || distance(sample, endpoint) <= MAX_ENDPOINT_SNAP_DISTANCE;
+function chooseSnapPoint(sample: TangentSample, endpoint: Point | null): Point | null {
+  return endpoint !== null && distance(sample, endpoint) <= MAX_ENDPOINT_SNAP_DISTANCE ? endpoint : null;
 }
 
-function selectShortestBranch(candidates: readonly TracedComponent[]): TracedComponent | null {
-  let bestCandidate: TracedComponent | null = null;
-  let bestLength = Infinity;
-  for (const candidate of candidates) {
-    const length = componentLength(candidate);
-    if (length < bestLength) {
-      bestLength = length;
-      bestCandidate = candidate;
-    }
+function snapOctagonEdgeJoins(edgeImages: TracedComponent[][]): void {
+  for (let edgeIndex = 0; edgeIndex < edgeImages.length; edgeIndex += 1) {
+    const previousEdge = edgeImages[(edgeIndex + edgeImages.length - 1) % edgeImages.length];
+    const nextEdge = edgeImages[edgeIndex];
+    snapAdjacentEdgeImages(previousEdge, nextEdge);
   }
-  return bestCandidate;
 }
 
-function selectRingBranches(edgeCandidates: readonly TracedComponent[][]): (TracedComponent | null)[] {
-  const candidateEdges = edgeCandidates.map(toSegmentCandidates);
-  if (candidateEdges.some((candidates) => candidates.length === 0)) {
-    return edgeCandidates.map((candidates) => selectShortestBranch(candidates));
-  }
+function snapAdjacentEdgeImages(previousEdge: TracedComponent[], nextEdge: TracedComponent[]): void {
+  const availableStarts = nextEdge
+    .map((component, index) => ({ component, index }))
+    .filter(({ component }) => !component.closed);
 
-  let bestSelection: SegmentCandidate[] | null = null;
-  let bestScore = Infinity;
-  for (const firstCandidate of candidateEdges[0]) {
-    const selection = selectRingBranchesFromFirst(candidateEdges, firstCandidate);
-    const score = ringSelectionScore(selection);
-    if (score < bestScore) {
-      bestScore = score;
-      bestSelection = selection;
-    }
-  }
+  for (const previous of previousEdge) {
+    if (previous.closed) continue;
+    const previousEnd = previous.samples[previous.samples.length - 1];
+    let bestStartIndex = -1;
+    let bestDistance = MAX_RING_JOIN_DISTANCE;
 
-  return bestSelection?.map((candidate) => candidate.component)
-    ?? edgeCandidates.map((candidates) => selectShortestBranch(candidates));
-}
-
-function selectRingBranchesFromFirst(
-  edgeCandidates: readonly SegmentCandidate[][],
-  firstCandidate: SegmentCandidate,
-): SegmentCandidate[] {
-  let states: RingSelectionState[] = [{ components: [firstCandidate], score: firstCandidate.length }];
-
-  for (let edgeIndex = 1; edgeIndex < edgeCandidates.length; edgeIndex += 1) {
-    const nextStates: RingSelectionState[] = [];
-    for (const candidate of edgeCandidates[edgeIndex]) {
-      let bestState: RingSelectionState | null = null;
-      let bestScore = Infinity;
-      for (const state of states) {
-        const previous = state.components[state.components.length - 1];
-        const score = state.score + candidate.length + ringJoinScore(previous, candidate);
-        if (score < bestScore) {
-          bestScore = score;
-          bestState = { components: [...state.components, candidate], score };
-        }
+    for (let index = 0; index < availableStarts.length; index += 1) {
+      const nextStart = availableStarts[index].component.samples[0];
+      const gap = distance(previousEnd, nextStart);
+      if (gap < bestDistance) {
+        bestDistance = gap;
+        bestStartIndex = index;
       }
-      if (bestState) nextStates.push(bestState);
     }
-    states = nextStates;
-  }
 
-  let bestState = states[0];
-  let bestScore = Infinity;
-  for (const state of states) {
-    const score = state.score + ringJoinScore(state.components[state.components.length - 1], firstCandidate);
-    if (score < bestScore) {
-      bestScore = score;
-      bestState = state;
+    if (bestStartIndex < 0) continue;
+
+    const [match] = availableStarts.splice(bestStartIndex, 1);
+    const nextStart = match.component.samples[0];
+    const sharedPoint = midpoint(previousEnd, nextStart);
+    previous.samples[previous.samples.length - 1] = replacePoint(previousEnd, sharedPoint);
+    match.component.samples[0] = replacePoint(nextStart, sharedPoint);
+  }
+}
+
+function snapNearbyOpenEndpoints(components: readonly TracedComponent[]): void {
+  const endpoints = collectOpenEndpoints(components);
+  const clusters: EndpointReference[][] = [];
+
+  for (const endpoint of endpoints) {
+    const cluster = clusters.find((candidate) => candidate.some((clusterEndpoint) => {
+      return distance(endpoint.sample(), clusterEndpoint.sample()) <= MAX_RING_ENDPOINT_CLUSTER_DISTANCE;
+    }));
+    if (cluster) {
+      cluster.push(endpoint);
+    } else {
+      clusters.push([endpoint]);
     }
   }
-  return bestState.components;
-}
 
-interface RingSelectionState {
-  readonly components: SegmentCandidate[];
-  readonly score: number;
-}
-
-function ringSelectionScore(components: readonly SegmentCandidate[]): number {
-  let score = 0;
-  for (let index = 0; index < components.length; index += 1) {
-    const current = components[index];
-    const next = components[(index + 1) % components.length];
-    score += current.length + ringJoinScore(current, next);
+  for (const cluster of clusters) {
+    if (cluster.length < 2) continue;
+    const sharedPoint = averageEndpoint(cluster);
+    for (const endpoint of cluster) {
+      endpoint.replace(sharedPoint);
+    }
   }
-  return score;
 }
 
-function ringJoinScore(current: SegmentCandidate, next: SegmentCandidate): number {
-  const gap = distance(current.end, next.start);
-  return RING_JOIN_SCORE_WEIGHT * gap * gap;
+interface EndpointReference {
+  sample(): TangentSample;
+  replace(point: Point): void;
 }
 
-function toSegmentCandidates(components: readonly TracedComponent[]): SegmentCandidate[] {
-  return components.map((component) => ({
-    component,
-    length: componentLength(component),
-    start: component.samples[0],
-    end: component.samples[component.samples.length - 1],
-  }));
-}
-
-function snapRingEndpoints(components: (TracedComponent | null)[]): void {
-  for (let index = 0; index < components.length; index += 1) {
-    const current = components[index];
-    const next = components[(index + 1) % components.length];
-    if (!current || !next) continue;
-
-    const currentEndIndex = current.samples.length - 1;
-    const currentEnd = current.samples[currentEndIndex];
-    const nextStart = next.samples[0];
-    const sharedPoint = {
-      x: 0.5 * (currentEnd.x + nextStart.x),
-      y: 0.5 * (currentEnd.y + nextStart.y),
-    };
-
-    current.samples[currentEndIndex] = replacePoint(currentEnd, sharedPoint);
-    next.samples[0] = replacePoint(nextStart, sharedPoint);
+function collectOpenEndpoints(components: readonly TracedComponent[]): EndpointReference[] {
+  const endpoints: EndpointReference[] = [];
+  for (const component of components) {
+    if (component.closed) continue;
+    endpoints.push({
+      sample: () => component.samples[0],
+      replace: (point) => { component.samples[0] = replacePoint(component.samples[0], point); },
+    });
+    endpoints.push({
+      sample: () => component.samples[component.samples.length - 1],
+      replace: (point) => {
+        const lastIndex = component.samples.length - 1;
+        component.samples[lastIndex] = replacePoint(component.samples[lastIndex], point);
+      },
+    });
   }
+  return endpoints;
+}
+
+function averageEndpoint(endpoints: readonly EndpointReference[]): Point {
+  let x = 0;
+  let y = 0;
+  for (const endpoint of endpoints) {
+    const sample = endpoint.sample();
+    x += sample.x;
+    y += sample.y;
+  }
+  return { x: x / endpoints.length, y: y / endpoints.length };
+}
+
+function isParameterInRange(parameter: number, minParameter: number, maxParameter: number): boolean {
+  return parameter >= minParameter - SEGMENT_RANGE_EPSILON
+    && parameter <= maxParameter + SEGMENT_RANGE_EPSILON;
 }
 
 function sampleParameter(sample: TangentSample, warp: WarpField, direction: Point): number {
@@ -430,12 +443,11 @@ function replacePoint(sample: TangentSample, point: Point | null): TangentSample
   return point ? { x: point.x, y: point.y, tangent: sample.tangent } : sample;
 }
 
-function componentLength(component: TracedComponent): number {
-  let length = 0;
-  for (let index = 1; index < component.samples.length; index += 1) {
-    length += distance(component.samples[index - 1], component.samples[index]);
-  }
-  return length;
+function midpoint(first: Point, second: Point): Point {
+  return {
+    x: 0.5 * (first.x + second.x),
+    y: 0.5 * (first.y + second.y),
+  };
 }
 
 class EndpointSolver {

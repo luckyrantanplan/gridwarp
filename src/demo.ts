@@ -70,6 +70,8 @@ const caption = getRequiredElement("caption", (element): element is HTMLDivEleme
 const timeSlider = getRequiredElement("time-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeInput = getRequiredElement("time-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeValue = getRequiredElement("time-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
+const gridEnabled = getRequiredElement("grid-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const diagonalsEnabled = getRequiredElement("diagonals-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const stage = getRequiredParentElement(scene);
 const minTime = Number(timeSlider.min);
 const maxTime = Number(timeSlider.max);
@@ -179,24 +181,30 @@ function render(): void {
   scene.setAttribute("viewBox", `0 0 ${String(width)} ${String(height)}`);
   scene.replaceChildren();
 
-  const limit = maxWarpedRadius(width, height, warp);
-  const offsets = lineOffsets(limit);
-  const horizontalGroup = document.createElementNS(SVG_NS, "g");
-  const verticalGroup = document.createElementNS(SVG_NS, "g");
+  const overlaySettings: OctagonOverlaySettings = {
+    ...octagonOverlaySettings,
+    showDiagonals: diagonalsEnabled.checked,
+  };
 
-  appendContourFamily(horizontalGroup, offsets, { x: 0, y: 1 }, "#d4372f", leafCells, warp);
-  appendContourFamily(verticalGroup, offsets, { x: 1, y: 0 }, "#148a45", leafCells, warp);
+  let offsetCount = "0";
+  if (gridEnabled.checked) {
+    const limit = maxWarpedRadius(width, height, warp);
+    const offsets = lineOffsets(limit);
+    const horizontalGroup = document.createElementNS(SVG_NS, "g");
+    const verticalGroup = document.createElementNS(SVG_NS, "g");
 
-  scene.append(
-    horizontalGroup,
-    verticalGroup,
-    createWarpedOctagonOverlay(warp, leafCells, contourTracer, contourRenderer, octagonOverlaySettings),
-  );
+    appendContourFamily(horizontalGroup, offsets, { x: 0, y: 1 }, "#d4372f", leafCells, warp);
+    appendContourFamily(verticalGroup, offsets, { x: 1, y: 0 }, "#148a45", leafCells, warp);
+    scene.append(horizontalGroup, verticalGroup);
+    offsetCount = String(offsets.length);
+  }
+
+  scene.append(createWarpedOctagonOverlay(warp, leafCells, contourTracer, contourRenderer, overlaySettings));
   syncTimeControls();
-  const offsetCount = String(offsets.length);
   const leafCellCount = String(leafCells.length);
   const smallestCell = smallestLeafCellSize(leafCells, leafCellSettings.maxContourCellSize).toFixed(1);
-  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsetCount} lines per axis · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
+  const gridLabel = gridEnabled.checked ? `${offsetCount} lines per axis` : "grid tracing disabled";
+  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 
 timeSlider.addEventListener("input", () => {
@@ -211,6 +219,14 @@ timeInput.addEventListener("keydown", (event: KeyboardEvent) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   commitTimeInputValue();
+});
+
+gridEnabled.addEventListener("change", () => {
+  render();
+});
+
+diagonalsEnabled.addEventListener("change", () => {
+  render();
 });
 
 const resizeObserver = new ResizeObserver(() => { render(); });
