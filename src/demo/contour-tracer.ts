@@ -17,24 +17,22 @@ import type {
 /**
  * Stores the numerical thresholds used by the contour tracer.
  */
-export class ContourTracerSettings {
-  constructor(
-    readonly minGradientNorm: number,
-    readonly newtonTolerance: number,
-    readonly maxProjectionIterations: number,
-    readonly maxNewtonDisplacement: number,
-    readonly initialTraceStep: number,
-    readonly maxTraceStep: number,
-    readonly traceMinStep: number,
-    readonly traceTargetCorrection: number,
-    readonly maxTraceTurn: number,
-    readonly maxTraceSteps: number,
-    readonly loopClosureDistance: number,
-    readonly minLoopArcLength: number,
-    readonly seedDedupDistance: number,
-    readonly visitedBucketSize: number,
-    readonly visitedSeedDistance: number,
-  ) {}
+export interface ContourTracerSettings {
+  readonly minGradientNorm: number;
+  readonly newtonTolerance: number;
+  readonly maxProjectionIterations: number;
+  readonly maxNewtonDisplacement: number;
+  readonly initialTraceStep: number;
+  readonly maxTraceStep: number;
+  readonly traceMinStep: number;
+  readonly traceTargetCorrection: number;
+  readonly maxTraceTurn: number;
+  readonly maxTraceSteps: number;
+  readonly loopClosureDistance: number;
+  readonly minLoopArcLength: number;
+  readonly seedDedupDistance: number;
+  readonly visitedBucketSize: number;
+  readonly visitedSeedDistance: number;
 }
 
 /**

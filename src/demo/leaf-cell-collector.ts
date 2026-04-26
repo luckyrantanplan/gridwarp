@@ -4,15 +4,13 @@
 import type { Axis, Cell, ScreenNode, WarpField } from "./types.js";
 
 /**
- * Stores the geometric thresholds that control adaptive cell refinement.
+ * Geometric thresholds that control adaptive cell refinement.
  */
-export class LeafCellCollectorSettings {
-  constructor(
-    readonly maxContourCellSize: number,
-    readonly minContourCellSize: number,
-    readonly maxAdaptiveDepth: number,
-    readonly curvatureErrorThreshold: number,
-  ) {}
+export interface LeafCellCollectorSettings {
+  readonly maxContourCellSize: number;
+  readonly minContourCellSize: number;
+  readonly maxAdaptiveDepth: number;
+  readonly curvatureErrorThreshold: number;
 }
 
 /**

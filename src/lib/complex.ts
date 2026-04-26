@@ -29,6 +29,3 @@ export function multiplyComplex(left: Complex, right: Complex): Complex {
 export function applyComplexAffine(point: Complex, pair: ComplexAffinePair): Complex {
   return addComplex(multiplyComplex(pair.a, point), pair.b);
 }
-
-
-

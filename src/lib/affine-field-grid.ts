@@ -1,5 +1,8 @@
 /**
  * Discrete lattice generation and validation for the sampled affine warp field.
+ *
+ * The grid stores one complex affine pair `(a, b)` per knot; consumers interpolate
+ * between knots to evaluate the warp continuously.
  */
 import { complex, type Complex, type ComplexAffinePair } from "./complex.js";
 
@@ -54,12 +57,7 @@ export function validateAffineGridSpec(spec: AffineGridSpec): void {
   }
 }
 
-
-
-export function coordinateAt(index: number, count: number, minimum: number, maximum: number): number {
-  return mix(minimum, maximum, index / (count - 1));
-}
-
-function mix(start: number, end: number, amount: number): number {
-  return start * (1 - amount) + end * amount;
+function coordinateAt(index: number, count: number, minimum: number, maximum: number): number {
+  const amount = index / (count - 1);
+  return minimum * (1 - amount) + maximum * amount;
 }

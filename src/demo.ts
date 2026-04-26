@@ -1,74 +1,54 @@
 /**
  * Demo entry point: wires the viewport, tracing pipeline, and SVG rendering together.
  */
-import { ContourTracer, ContourTracerSettings } from "./demo/contour-tracer.js";
+import { ContourTracer, type ContourTracerSettings } from "./demo/contour-tracer.js";
 import { createCenteredRadialWarpField, maxWarpedRadius } from "./demo/centered-radial-warp.js";
 import { WarpFieldContext } from "./demo/field-context.js";
-import { LeafCellCollector, LeafCellCollectorSettings, smallestLeafCellSize } from "./demo/leaf-cell-collector.js";
+import {
+  LeafCellCollector,
+  smallestLeafCellSize,
+  type LeafCellCollectorSettings,
+} from "./demo/leaf-cell-collector.js";
 import { SvgContourRenderer } from "./demo/svg-contour-renderer.js";
-import type {
-  Axis,
-  Cell,
-  FieldContext,
-  WarpField,
-} from "./demo/types.js";
+import type { Axis, Cell, FieldContext, WarpField } from "./demo/types.js";
 
-// Adaptive seed grid.
+const SVG_NS = "http://www.w3.org/2000/svg";
 const DEFAULT_TIME = 16.0;
-const MAX_CONTOUR_CELL_SIZE = 8;
-const MIN_CONTOUR_CELL_SIZE = 3;
-const CURVATURE_ERROR_THRESHOLD = 0.02;
-const MAX_ADAPTIVE_DEPTH = 3;
 const GRID_OFFSET = 0.5;
 
-// Contour tracing.
-const MIN_GRADIENT_NORM = 1e-4;
-const NEWTON_TOLERANCE = 1e-3;
-const MAX_PROJECTION_ITERATIONS = 10;
-const MAX_NEWTON_DISPLACEMENT = 2;
-const INITIAL_TRACE_STEP = 4;
-const MAX_TRACE_STEP = 8;
-const TRACE_MIN_STEP = 0.25;
-const TRACE_TARGET_CORRECTION = 0.4;
-const MAX_TRACE_TURN = Math.PI / 6;
-const MAX_TRACE_STEPS = 4000;
-const LOOP_CLOSURE_DISTANCE = 3;
-const MIN_LOOP_ARC_LENGTH = 40;
-const SEED_DEDUP_DISTANCE = 4;
-const VISITED_BUCKET_SIZE = 18;
-const VISITED_SEED_DISTANCE = 10;
-
-// SVG output and UI formatting.
-const STROKE_WIDTH = 2.2;
-const PATH_DECIMALS = 2;
-const SVG_NS = "http://www.w3.org/2000/svg";
 const AFFINE_GRID_COLUMNS = 1000;
 const AFFINE_GRID_ROWS = 1000;
 const AFFINE_GRID_JACOBIAN_EPSILON = 0.75;
-const leafCellCollectorSettings = new LeafCellCollectorSettings(
-  MAX_CONTOUR_CELL_SIZE,
-  MIN_CONTOUR_CELL_SIZE,
-  MAX_ADAPTIVE_DEPTH,
-  CURVATURE_ERROR_THRESHOLD,
-);
-const contourTracerSettings = new ContourTracerSettings(
-  MIN_GRADIENT_NORM,
-  NEWTON_TOLERANCE,
-  MAX_PROJECTION_ITERATIONS,
-  MAX_NEWTON_DISPLACEMENT,
-  INITIAL_TRACE_STEP,
-  MAX_TRACE_STEP,
-  TRACE_MIN_STEP,
-  TRACE_TARGET_CORRECTION,
-  MAX_TRACE_TURN,
-  MAX_TRACE_STEPS,
-  LOOP_CLOSURE_DISTANCE,
-  MIN_LOOP_ARC_LENGTH,
-  SEED_DEDUP_DISTANCE,
-  VISITED_BUCKET_SIZE,
-  VISITED_SEED_DISTANCE,
-);
-const contourTracer = new ContourTracer(contourTracerSettings);
+
+const STROKE_WIDTH = 2.2;
+const PATH_DECIMALS = 2;
+
+const leafCellSettings: LeafCellCollectorSettings = {
+  maxContourCellSize: 8,
+  minContourCellSize: 3,
+  maxAdaptiveDepth: 3,
+  curvatureErrorThreshold: 0.02,
+};
+
+const tracerSettings: ContourTracerSettings = {
+  minGradientNorm: 1e-4,
+  newtonTolerance: 1e-3,
+  maxProjectionIterations: 10,
+  maxNewtonDisplacement: 2,
+  initialTraceStep: 4,
+  maxTraceStep: 8,
+  traceMinStep: 0.25,
+  traceTargetCorrection: 0.4,
+  maxTraceTurn: Math.PI / 6,
+  maxTraceSteps: 4000,
+  loopClosureDistance: 3,
+  minLoopArcLength: 40,
+  seedDedupDistance: 4,
+  visitedBucketSize: 18,
+  visitedSeedDistance: 10,
+};
+
+const contourTracer = new ContourTracer(tracerSettings);
 const contourRenderer = new SvgContourRenderer(STROKE_WIDTH, PATH_DECIMALS);
 
 const scene = getRequiredElement("scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
@@ -179,7 +159,7 @@ function render(): void {
     AFFINE_GRID_JACOBIAN_EPSILON,
   );
   const field: FieldContext = new WarpFieldContext(warp);
-  const leafCells: Cell[] = new LeafCellCollector(width, height, warp, leafCellCollectorSettings).collect();
+  const leafCells: Cell[] = new LeafCellCollector(width, height, warp, leafCellSettings).collect();
 
   scene.setAttribute("viewBox", `0 0 ${String(width)} ${String(height)}`);
   scene.replaceChildren();
@@ -196,7 +176,7 @@ function render(): void {
   syncTimeControls();
   const offsetCount = String(offsets.length);
   const leafCellCount = String(leafCells.length);
-  const smallestCell = smallestLeafCellSize(leafCells, MAX_CONTOUR_CELL_SIZE).toFixed(1);
+  const smallestCell = smallestLeafCellSize(leafCells, leafCellSettings.maxContourCellSize).toFixed(1);
   caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsetCount} lines per axis · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 

@@ -38,10 +38,5 @@ export interface TracedComponent {
   readonly samples: TangentSample[];
 }
 
-export interface PointIndex {
-  hasNearby(point: Point, maxDistance: number): boolean;
-  addPoint(point: Point): void;
-}
-
 export type Axis = keyof WarpValue;
 export type Segment = readonly [Point, Point];
