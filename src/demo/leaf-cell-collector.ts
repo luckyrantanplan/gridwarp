@@ -102,6 +102,16 @@ export class LeafCellCollector {
   }
 }
 
+export function smallestLeafCellSize(leafCells: readonly Cell[], fallbackSize: number): number {
+  let smallest = Infinity;
+  for (const cell of leafCells) {
+    const width = cell.tr.screenX - cell.tl.screenX;
+    const height = cell.bl.screenY - cell.tl.screenY;
+    smallest = Math.min(smallest, width, height);
+  }
+  return Number.isFinite(smallest) ? smallest : fallbackSize;
+}
+
 function coordinateAxis(length: number, cellSize: number): number[] {
   const steps = Math.max(2, Math.ceil(length / cellSize));
   const coordinates: number[] = [];

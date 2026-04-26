@@ -1,15 +1,10 @@
 /**
- * Demo entry point: builds the warp field, traces contour families, and renders SVG output.
+ * Demo entry point: wires the viewport, tracing pipeline, and SVG rendering together.
  */
-import {
-  createAffineFieldGrid,
-  type AffineGridSpec,
-} from "./lib/affine-field-grid.js";
-import { createCenteredRadialAffinePair } from "./lib/deformation-field.js";
 import { ContourTracer, ContourTracerSettings } from "./demo/contour-tracer.js";
-import { AffineGridWarpField } from "./lib/warp-field.js";
+import { createCenteredRadialWarpField, maxWarpedRadius } from "./demo/centered-radial-warp.js";
 import { WarpFieldContext } from "./demo/field-context.js";
-import { LeafCellCollector, LeafCellCollectorSettings } from "./demo/leaf-cell-collector.js";
+import { LeafCellCollector, LeafCellCollectorSettings, smallestLeafCellSize } from "./demo/leaf-cell-collector.js";
 import { SvgContourRenderer } from "./demo/svg-contour-renderer.js";
 import type {
   Axis,
@@ -112,52 +107,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function createBilinearAffineWarpField(
-  width: number,
-  height: number,
-  time: number,
-  columns: number,
-  rows: number,
-): WarpField {
-  const { xMax, yMax } = visibleBounds(width, height);
-  const spec: AffineGridSpec = {
-    columns,
-    rows,
-    minReal: -xMax,
-    maxReal: xMax,
-    minImag: -yMax,
-    maxImag: yMax,
-    time,
-  };
-  const affineFieldGrid = createAffineFieldGrid(spec, createCenteredRadialAffinePair);
-  return new AffineGridWarpField(width, height, spec, affineFieldGrid, AFFINE_GRID_JACOBIAN_EPSILON);
-}
-
-// ---------------------------------------------------------------------------
-// Viewport bounds / grid level sets
-// ---------------------------------------------------------------------------
-
-function visibleBounds(width: number, height: number): { xMax: number; yMax: number } {
-  return {
-    xMax: 5 * width / height,
-    yMax: 5,
-  };
-}
-
-function maxWarpedRadius(width: number, height: number, warp: WarpField): number {
-  const { xMax, yMax } = visibleBounds(width, height);
-  const planeScale = height / 10;
-  let maximum = 0;
-  for (let step = 0; step <= 256; step += 1) {
-    const t = step / 256;
-    const screenX = width * 0.5 + planeScale * t * xMax;
-    const screenY = height * 0.5 - planeScale * t * yMax;
-    const v = warp.valueAt(screenX, screenY);
-    maximum = Math.max(maximum, Math.hypot(v.warpedX, v.warpedY));
-  }
-  return maximum + 1;
-}
-
 function lineOffsets(limit: number): number[] {
   const values: number[] = [];
   const start = Math.floor(-limit);
@@ -217,26 +166,17 @@ function commitTimeInputValue(): void {
   setCurrentTime(Number(rawValue));
 }
 
-function smallestLeafSize(leafCells: readonly Cell[]): number {
-  let smallest = Infinity;
-  for (const cell of leafCells) {
-    const w = cell.tr.screenX - cell.tl.screenX;
-    const h = cell.bl.screenY - cell.tl.screenY;
-    smallest = Math.min(smallest, w, h);
-  }
-  return Number.isFinite(smallest) ? smallest : MAX_CONTOUR_CELL_SIZE;
-}
-
 function render(): void {
   const width = stage.clientWidth;
   const height = stage.clientHeight;
 
-  const warp = createBilinearAffineWarpField(
+  const warp = createCenteredRadialWarpField(
     width,
     height,
     currentTime,
     AFFINE_GRID_COLUMNS,
     AFFINE_GRID_ROWS,
+    AFFINE_GRID_JACOBIAN_EPSILON,
   );
   const field: FieldContext = new WarpFieldContext(warp);
   const leafCells: Cell[] = new LeafCellCollector(width, height, warp, leafCellCollectorSettings).collect();
@@ -256,7 +196,7 @@ function render(): void {
   syncTimeControls();
   const offsetCount = String(offsets.length);
   const leafCellCount = String(leafCells.length);
-  const smallestCell = smallestLeafSize(leafCells).toFixed(1);
+  const smallestCell = smallestLeafCellSize(leafCells, MAX_CONTOUR_CELL_SIZE).toFixed(1);
   caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsetCount} lines per axis · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 
