@@ -151,9 +151,6 @@ function appendSegmentImages(
   stroke: string,
   endpointSolver: EndpointSolver,
 ): void {
-  const geometry = segmentGeometry(segment);
-  if (!geometry) return;
-
   appendComponents(parent, traceSegmentImages(segment, warp, leafCells, tracer, endpointSolver), renderer, stroke);
 }
 
@@ -238,7 +235,7 @@ function clipComponentToRange(
   const minParameter = Math.min(startParameter, endParameter);
   const maxParameter = Math.max(startParameter, endParameter);
   if (component.closed && component.samples.every((sample) => isParameterInRange(sampleParameter(sample, warp, direction), minParameter, maxParameter))) {
-    return [{ closed: true, samples: component.samples.slice() }];
+    return [cloneComponent(component)];
   }
 
   const samples = component.closed ? [...component.samples, component.samples[0]] : component.samples;
@@ -323,12 +320,12 @@ function snapOctagonEdgeJoins(edgeImages: TracedComponent[][]): void {
 
 function snapAdjacentEdgeImages(previousEdge: TracedComponent[], nextEdge: TracedComponent[]): void {
   const availableStarts = nextEdge
-    .map((component, index) => ({ component, index }))
+    .map((component) => ({ component }))
     .filter(({ component }) => !component.closed);
 
   for (const previous of previousEdge) {
     if (previous.closed) continue;
-    const previousEnd = previous.samples[previous.samples.length - 1];
+    const previousEnd = lastSample(previous.samples);
     let bestStartIndex = -1;
     let bestDistance = MAX_RING_JOIN_DISTANCE;
 
@@ -346,7 +343,7 @@ function snapAdjacentEdgeImages(previousEdge: TracedComponent[], nextEdge: Trace
     const [match] = availableStarts.splice(bestStartIndex, 1);
     const nextStart = match.component.samples[0];
     const sharedPoint = midpoint(previousEnd, nextStart);
-    previous.samples[previous.samples.length - 1] = replacePoint(previousEnd, sharedPoint);
+    replaceLastSample(previous.samples, sharedPoint);
     match.component.samples[0] = replacePoint(nextStart, sharedPoint);
   }
 }
@@ -389,11 +386,8 @@ function collectOpenEndpoints(components: readonly TracedComponent[]): EndpointR
       replace: (point) => { component.samples[0] = replacePoint(component.samples[0], point); },
     });
     endpoints.push({
-      sample: () => component.samples[component.samples.length - 1],
-      replace: (point) => {
-        const lastIndex = component.samples.length - 1;
-        component.samples[lastIndex] = replacePoint(component.samples[lastIndex], point);
-      },
+      sample: () => lastSample(component.samples),
+      replace: (point) => { replaceLastSample(component.samples, point); },
     });
   }
   return endpoints;
@@ -441,6 +435,22 @@ function snapRunEndpoints(samples: readonly TangentSample[], startPoint: Point |
 
 function replacePoint(sample: TangentSample, point: Point | null): TangentSample {
   return point ? { x: point.x, y: point.y, tangent: sample.tangent } : sample;
+}
+
+function replaceLastSample(samples: TangentSample[], point: Point): void {
+  const lastIndex = samples.length - 1;
+  samples[lastIndex] = replacePoint(samples[lastIndex], point);
+}
+
+function lastSample(samples: readonly TangentSample[]): TangentSample {
+  return samples[samples.length - 1];
+}
+
+function cloneComponent(component: TracedComponent): TracedComponent {
+  return {
+    closed: component.closed,
+    samples: component.samples.slice(),
+  };
 }
 
 function midpoint(first: Point, second: Point): Point {
