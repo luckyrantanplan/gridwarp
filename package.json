@@ -1,0 +1,25 @@
+{
+  "name": "gridwarp",
+  "version": "1.0.0",
+  "description": "Warped grid demo with bilinear affine warp sampling",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "npm run build && node --test dist/test/**/*.test.js",
+    "test:coverage": "npm run build && node --test --experimental-test-coverage dist/test/**/*.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.6.0",
+    "eslint": "^10.2.1",
+    "globals": "^17.5.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.0"
+  }
+}
