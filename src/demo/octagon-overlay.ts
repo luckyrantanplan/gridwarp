@@ -5,12 +5,13 @@ import type { ContourTracer } from "./contour-tracer.js";
 import {
   createWarpedPolylineOverlay,
   type PlaneSegment,
+  regularPolygonVertices,
   segmentsFromVertices,
   type WarpedPolylineOverlaySettings,
   type WarpedPolylineShape,
 } from "./polyline-overlay.js";
 import type { SvgContourRenderer } from "./svg-contour-renderer.js";
-import type { Cell, Point, WarpField } from "./types.js";
+import type { Cell, WarpField } from "./types.js";
 
 export interface OctagonOverlaySettings extends WarpedPolylineOverlaySettings {
   readonly outerRadius: number;
@@ -29,6 +30,10 @@ export function createWarpedOctagonOverlay(
   renderer: SvgContourRenderer,
   settings: OctagonOverlaySettings,
 ): SVGGElement {
+  return createWarpedPolylineOverlay(warp, leafCells, tracer, renderer, octagonShapes(settings), settings);
+}
+
+function octagonShapes(settings: OctagonOverlaySettings): WarpedPolylineShape[] {
   const shapes: WarpedPolylineShape[] = [
     { segments: segmentsFromVertices(regularPolygonVertices(8, settings.outerRadius)), closed: true },
     { segments: segmentsFromVertices(regularPolygonVertices(8, settings.innerRadius)), closed: true },
@@ -41,16 +46,7 @@ export function createWarpedOctagonOverlay(
     });
   }
 
-  return createWarpedPolylineOverlay(warp, leafCells, tracer, renderer, shapes, settings);
-}
-
-function regularPolygonVertices(sides: number, radius: number): Point[] {
-  const vertices: Point[] = [];
-  for (let vertex = 0; vertex < sides; vertex += 1) {
-    const angle = vertex * (2 * Math.PI) / sides;
-    vertices.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
-  }
-  return vertices;
+  return shapes;
 }
 
 function octagonDiagonals(outerRadius: number): PlaneSegment[] {

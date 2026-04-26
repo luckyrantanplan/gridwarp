@@ -32,6 +32,16 @@ export interface WarpedPolylineShape {
   readonly opacity?: number;
 }
 
+interface OverlayRenderContext {
+  readonly warp: WarpField;
+  readonly leafCells: readonly Cell[];
+  readonly tracer: ContourTracer;
+  readonly renderer: SvgContourRenderer;
+  readonly stroke: string;
+  readonly strokeWidth: number;
+  readonly endpointSolver: EndpointSolver;
+}
+
 export function segmentsFromVertices(vertices: readonly Point[], closed = true): PlaneSegment[] {
   if (vertices.length < 2) return [];
 
@@ -42,6 +52,15 @@ export function segmentsFromVertices(vertices: readonly Point[], closed = true):
     segments.push({ start: vertices[index], end: vertices[nextIndex] });
   }
   return segments;
+}
+
+export function regularPolygonVertices(sides: number, radius: number): Point[] {
+  const vertices: Point[] = [];
+  for (let vertex = 0; vertex < sides; vertex += 1) {
+    const angle = vertex * (2 * Math.PI) / sides;
+    vertices.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+  }
+  return vertices;
 }
 
 interface SegmentGeometry {
@@ -76,10 +95,18 @@ export function createWarpedPolylineOverlay(
   settings: WarpedPolylineOverlaySettings,
 ): SVGGElement {
   const group = createOverlayGroup(settings.stroke, settings.strokeWidth);
-  const endpointSolver = new EndpointSolver(warp);
+  const context: OverlayRenderContext = {
+    warp,
+    leafCells,
+    tracer,
+    renderer,
+    stroke: settings.stroke,
+    strokeWidth: settings.strokeWidth,
+    endpointSolver: new EndpointSolver(warp),
+  };
 
   for (const shape of shapes) {
-    appendShape(group, shape, warp, leafCells, tracer, renderer, settings.stroke, settings.strokeWidth, endpointSolver);
+    appendShape(group, shape, context);
   }
 
   return group;
@@ -88,32 +115,20 @@ export function createWarpedPolylineOverlay(
 function appendShape(
   parent: SVGGElement,
   shape: WarpedPolylineShape,
-  warp: WarpField,
-  leafCells: readonly Cell[],
-  tracer: ContourTracer,
-  renderer: SvgContourRenderer,
-  stroke: string,
-  strokeWidth: number,
-  endpointSolver: EndpointSolver,
+  context: OverlayRenderContext,
 ): void {
-  const segmentImages = shape.segments.map((segment) => traceSegmentImages(
-    segment,
-    warp,
-    leafCells,
-    tracer,
-    endpointSolver,
-  ));
+  const segmentImages = shape.segments.map((segment) => traceSegmentImages(segment, context));
   const components = shape.closed ? mergeSegmentLoopImages(segmentImages) : segmentImages.flat();
   if (components.length === 0) return;
 
   const target = shape.opacity === undefined
     ? parent
-    : createOverlayGroup(stroke, strokeWidth);
+    : createOverlayGroup(context.stroke, context.strokeWidth);
   if (shape.opacity !== undefined) {
     target.setAttribute("opacity", String(shape.opacity));
   }
 
-  appendComponents(target, components, renderer, stroke);
+  appendComponents(target, components, context.renderer, context.stroke);
   if (target !== parent) parent.appendChild(target);
 }
 
@@ -141,17 +156,14 @@ function appendComponents(
 
 function traceSegmentImages(
   segment: PlaneSegment,
-  warp: WarpField,
-  leafCells: readonly Cell[],
-  tracer: ContourTracer,
-  endpointSolver: EndpointSolver,
+  context: OverlayRenderContext,
 ): SegmentImage[] {
   const geometry = segmentGeometry(segment);
   if (!geometry) return [];
 
-  const startPoint = endpointSolver.solve(segment.start);
-  const endPoint = endpointSolver.solve(segment.end);
-  return traceSegmentCandidates(geometry, warp, leafCells, tracer, startPoint, endPoint);
+  const startPoint = context.endpointSolver.solve(segment.start);
+  const endPoint = context.endpointSolver.solve(segment.end);
+  return traceSegmentCandidates(geometry, context.warp, context.leafCells, context.tracer, startPoint, endPoint);
 }
 
 function traceSegmentCandidates(
