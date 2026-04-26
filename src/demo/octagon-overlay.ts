@@ -1,13 +1,11 @@
 /**
  * SVG overlay drawing the two octagons and four diagonals through the unified
- * level-set tracing pipeline.
+ * contour-tracing pipeline.
  *
- * Every line / segment is described in plane coordinates (the warp output space).
- * The screen-space curve we want to draw is the preimage of that line under the
- * warp, i.e. the zero level set of `n · warp(p) - c` where (n, c) describe the
- * line. We trace the level set with `ContourTracer`, clip the resulting samples
- * to the segment's parametric range along the line direction, and render each
- * clipped run with `SvgContourRenderer`.
+ * Each overlay edge is still traced as the preimage of its supporting line, but the
+ * finite segment topology is enforced after tracing: only endpoint-to-endpoint runs
+ * are renderable, octagon rings are assembled as one coherent cycle, and ring edges
+ * snap adjacent endpoints to shared vertices.
  */
 import type { ContourTracer } from "./contour-tracer.js";
 import type { SvgContourRenderer } from "./svg-contour-renderer.js";
@@ -16,9 +14,11 @@ import { WarpLinearField } from "./warp-scalar-fields.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SEGMENT_RANGE_EPSILON = 1e-6;
-const ENDPOINT_SOLVER_TOLERANCE = 1e-6;
-const ENDPOINT_SOLVER_MAX_DISPLACEMENT = 12;
-const ENDPOINT_SOLVER_ITERATIONS = 20;
+const MAX_ENDPOINT_SNAP_DISTANCE = 24;
+const RING_JOIN_SCORE_WEIGHT = 20;
+const ENDPOINT_SOLVER_TOLERANCE = 1e-3;
+const ENDPOINT_SOLVER_MAX_DISPLACEMENT = 48;
+const ENDPOINT_SOLVER_ITERATIONS = 60;
 
 export interface OctagonOverlaySettings {
   readonly outerRadius: number;
@@ -41,9 +41,21 @@ interface SegmentGeometry {
   readonly endParameter: number;
 }
 
+interface ClipRun {
+  readonly samples: TangentSample[];
+  readonly clippedAtStart: boolean;
+  readonly clippedAtEnd: boolean;
+}
+
+interface SegmentCandidate {
+  readonly component: TracedComponent;
+  readonly length: number;
+  readonly start: TangentSample;
+  readonly end: TangentSample;
+}
+
 /**
- * Builds an SVG group containing the warped outer octagon, inner octagon, and four diagonals,
- * all rendered through the same contour-tracing + cubic-Bézier smoothing pipeline as the grid.
+ * Builds an SVG group containing the warped outer octagon, inner octagon, and four diagonals.
  */
 export function createWarpedOctagonOverlay(
   warp: WarpField,
@@ -55,12 +67,15 @@ export function createWarpedOctagonOverlay(
   const group = createOverlayGroup(settings.stroke, settings.strokeWidth);
   const endpointSolver = new EndpointSolver(warp);
 
-  appendSegments(group, octagonEdges(settings.outerRadius), warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
-  appendSegments(group, octagonEdges(settings.innerRadius), warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
+  appendOctagon(group, settings.outerRadius, warp, leafCells, tracer, renderer, settings.stroke);
+  appendOctagon(group, settings.innerRadius, warp, leafCells, tracer, renderer, settings.stroke);
 
   const diagonals = createOverlayGroup(settings.stroke, settings.strokeWidth);
   diagonals.setAttribute("opacity", String(settings.diagonalOpacity));
-  appendSegments(diagonals, octagonDiagonals(settings.outerRadius), warp, leafCells, tracer, renderer, settings.stroke, endpointSolver);
+  for (const segment of octagonDiagonals(settings.outerRadius)) {
+    const component = traceSegment(segment, warp, leafCells, tracer, endpointSolver);
+    if (component) diagonals.appendChild(renderer.createPathElement(component, settings.stroke));
+  }
   group.appendChild(diagonals);
 
   return group;
@@ -77,18 +92,23 @@ function createOverlayGroup(stroke: string, strokeWidth: number): SVGGElement {
   return group;
 }
 
-function appendSegments(
+function appendOctagon(
   parent: SVGGElement,
-  segments: readonly PlaneSegment[],
+  radius: number,
   warp: WarpField,
   leafCells: readonly Cell[],
   tracer: ContourTracer,
   renderer: SvgContourRenderer,
   stroke: string,
-  endpointSolver: EndpointSolver,
 ): void {
-  for (const segment of segments) {
-    appendSegment(parent, segment, warp, leafCells, tracer, renderer, stroke, endpointSolver);
+  const edgeCandidates = octagonEdges(radius)
+    .map(segmentGeometry)
+    .filter((geometry): geometry is SegmentGeometry => geometry !== null)
+    .map((geometry) => traceSegmentCandidates(geometry, warp, leafCells, tracer, null, null, false));
+  const components = selectRingBranches(edgeCandidates);
+  snapRingEndpoints(components);
+  for (const component of components) {
+    if (component) parent.appendChild(renderer.createPathElement(component, stroke));
   }
 }
 
@@ -120,26 +140,35 @@ function octagonDiagonals(outerRadius: number): PlaneSegment[] {
   return segments;
 }
 
-function appendSegment(
-  parent: SVGGElement,
+function traceSegment(
   segment: PlaneSegment,
   warp: WarpField,
   leafCells: readonly Cell[],
   tracer: ContourTracer,
-  renderer: SvgContourRenderer,
-  stroke: string,
   endpointSolver: EndpointSolver,
-): void {
+): TracedComponent | null {
   const geometry = segmentGeometry(segment);
-  if (!geometry) return;
+  if (!geometry) return null;
 
-  const field = new WarpLinearField(warp, geometry.normal, geometry.lineOffset);
   const startPoint = endpointSolver.solve(segment.start);
   const endPoint = endpointSolver.solve(segment.end);
-  const components = tracer.trace(field, leafCells);
+  return selectShortestBranch(traceSegmentCandidates(geometry, warp, leafCells, tracer, startPoint, endPoint, true));
+}
 
-  for (const component of components) {
-    const clippedComponents = clipComponentToRange(
+function traceSegmentCandidates(
+  geometry: SegmentGeometry,
+  warp: WarpField,
+  leafCells: readonly Cell[],
+  tracer: ContourTracer,
+  startPoint: Point | null,
+  endPoint: Point | null,
+  requireEndpointProximity: boolean,
+): TracedComponent[] {
+  const field = new WarpLinearField(warp, geometry.normal, geometry.lineOffset);
+  const candidates: TracedComponent[] = [];
+
+  for (const component of tracer.trace(field, leafCells)) {
+    candidates.push(...clipComponentToRange(
       component,
       warp,
       geometry.direction,
@@ -147,11 +176,11 @@ function appendSegment(
       geometry.endParameter,
       startPoint,
       endPoint,
-    );
-    for (const clipped of clippedComponents) {
-      parent.appendChild(renderer.createPathElement(clipped, stroke));
-    }
+      requireEndpointProximity,
+    ));
   }
+
+  return candidates;
 }
 
 function segmentGeometry(segment: PlaneSegment): SegmentGeometry | null {
@@ -171,12 +200,6 @@ function segmentGeometry(segment: PlaneSegment): SegmentGeometry | null {
   };
 }
 
-interface ClipRun {
-  readonly samples: TangentSample[];
-  readonly clippedAtStart: boolean;
-  readonly clippedAtEnd: boolean;
-}
-
 function clipComponentToRange(
   component: TracedComponent,
   warp: WarpField,
@@ -185,13 +208,36 @@ function clipComponentToRange(
   endParameter: number,
   startPoint: Point | null,
   endPoint: Point | null,
+  requireEndpointProximity: boolean,
 ): TracedComponent[] {
   const minParameter = Math.min(startParameter, endParameter);
   const maxParameter = Math.max(startParameter, endParameter);
-  const samples = component.closed
-    ? [...component.samples, component.samples[0]]
-    : component.samples;
+  const samples = component.closed ? [...component.samples, component.samples[0]] : component.samples;
+  const runs = collectClipRuns(samples, warp, direction, minParameter, maxParameter);
 
+  const clippedComponents: TracedComponent[] = [];
+  for (const run of runs) {
+    if (run.samples.length < 2) continue;
+    const oriented = orientRun(run, startParameter <= endParameter);
+    if (!isEndpointToEndpointRun(oriented)) continue;
+    if (requireEndpointProximity && (!isNearEndpoint(oriented.samples[0], startPoint) || !isNearEndpoint(oriented.samples[oriented.samples.length - 1], endPoint))) {
+      continue;
+    }
+    clippedComponents.push({
+      closed: false,
+      samples: snapRunEndpoints(oriented.samples, oriented.clippedAtStart ? startPoint : null, oriented.clippedAtEnd ? endPoint : null),
+    });
+  }
+  return clippedComponents;
+}
+
+function collectClipRuns(
+  samples: readonly TangentSample[],
+  warp: WarpField,
+  direction: Point,
+  minParameter: number,
+  maxParameter: number,
+): ClipRun[] {
   const runs: ClipRun[] = [];
   let currentSamples: TangentSample[] = [];
   let currentClippedAtStart = false;
@@ -206,6 +252,7 @@ function clipComponentToRange(
       currentSamples.push(sample);
       continue;
     }
+
     sawOutOfRange = true;
     if (currentSamples.length > 0) {
       runs.push({ samples: currentSamples, clippedAtStart: currentClippedAtStart, clippedAtEnd: true });
@@ -213,21 +260,11 @@ function clipComponentToRange(
       currentClippedAtStart = false;
     }
   }
+
   if (currentSamples.length > 0) {
     runs.push({ samples: currentSamples, clippedAtStart: currentClippedAtStart, clippedAtEnd: false });
   }
-
-  const clippedComponents: TracedComponent[] = [];
-  for (const run of runs) {
-    if (run.samples.length < 2) continue;
-    const oriented = orientRun(run, startParameter <= endParameter);
-    if (!shouldRenderRun(oriented)) continue;
-    clippedComponents.push({
-      closed: false,
-      samples: snapRunEndpoints(oriented.samples, oriented.clippedAtStart ? startPoint : null, oriented.clippedAtEnd ? endPoint : null),
-    });
-  }
-  return clippedComponents;
+  return runs;
 }
 
 function orientRun(run: ClipRun, forward: boolean): ClipRun {
@@ -239,12 +276,130 @@ function orientRun(run: ClipRun, forward: boolean): ClipRun {
   };
 }
 
-function shouldRenderRun(run: ClipRun): boolean {
-  // Overlay segments represent a single finite segment between two solved endpoints.
-  // If the level set develops extra disconnected components entirely inside the
-  // parameter range, they are valid preimages of the infinite line but not of the
-  // intended endpoint-connected overlay segment.
-  return run.clippedAtStart || run.clippedAtEnd;
+function isEndpointToEndpointRun(run: ClipRun): boolean {
+  return run.clippedAtStart && run.clippedAtEnd;
+}
+
+function isNearEndpoint(sample: TangentSample, endpoint: Point | null): boolean {
+  return endpoint === null || distance(sample, endpoint) <= MAX_ENDPOINT_SNAP_DISTANCE;
+}
+
+function selectShortestBranch(candidates: readonly TracedComponent[]): TracedComponent | null {
+  let bestCandidate: TracedComponent | null = null;
+  let bestLength = Infinity;
+  for (const candidate of candidates) {
+    const length = componentLength(candidate);
+    if (length < bestLength) {
+      bestLength = length;
+      bestCandidate = candidate;
+    }
+  }
+  return bestCandidate;
+}
+
+function selectRingBranches(edgeCandidates: readonly TracedComponent[][]): (TracedComponent | null)[] {
+  const candidateEdges = edgeCandidates.map(toSegmentCandidates);
+  if (candidateEdges.some((candidates) => candidates.length === 0)) {
+    return edgeCandidates.map((candidates) => selectShortestBranch(candidates));
+  }
+
+  let bestSelection: SegmentCandidate[] | null = null;
+  let bestScore = Infinity;
+  for (const firstCandidate of candidateEdges[0]) {
+    const selection = selectRingBranchesFromFirst(candidateEdges, firstCandidate);
+    const score = ringSelectionScore(selection);
+    if (score < bestScore) {
+      bestScore = score;
+      bestSelection = selection;
+    }
+  }
+
+  return bestSelection?.map((candidate) => candidate.component)
+    ?? edgeCandidates.map((candidates) => selectShortestBranch(candidates));
+}
+
+function selectRingBranchesFromFirst(
+  edgeCandidates: readonly SegmentCandidate[][],
+  firstCandidate: SegmentCandidate,
+): SegmentCandidate[] {
+  let states: RingSelectionState[] = [{ components: [firstCandidate], score: firstCandidate.length }];
+
+  for (let edgeIndex = 1; edgeIndex < edgeCandidates.length; edgeIndex += 1) {
+    const nextStates: RingSelectionState[] = [];
+    for (const candidate of edgeCandidates[edgeIndex]) {
+      let bestState: RingSelectionState | null = null;
+      let bestScore = Infinity;
+      for (const state of states) {
+        const previous = state.components[state.components.length - 1];
+        const score = state.score + candidate.length + ringJoinScore(previous, candidate);
+        if (score < bestScore) {
+          bestScore = score;
+          bestState = { components: [...state.components, candidate], score };
+        }
+      }
+      if (bestState) nextStates.push(bestState);
+    }
+    states = nextStates;
+  }
+
+  let bestState = states[0];
+  let bestScore = Infinity;
+  for (const state of states) {
+    const score = state.score + ringJoinScore(state.components[state.components.length - 1], firstCandidate);
+    if (score < bestScore) {
+      bestScore = score;
+      bestState = state;
+    }
+  }
+  return bestState.components;
+}
+
+interface RingSelectionState {
+  readonly components: SegmentCandidate[];
+  readonly score: number;
+}
+
+function ringSelectionScore(components: readonly SegmentCandidate[]): number {
+  let score = 0;
+  for (let index = 0; index < components.length; index += 1) {
+    const current = components[index];
+    const next = components[(index + 1) % components.length];
+    score += current.length + ringJoinScore(current, next);
+  }
+  return score;
+}
+
+function ringJoinScore(current: SegmentCandidate, next: SegmentCandidate): number {
+  const gap = distance(current.end, next.start);
+  return RING_JOIN_SCORE_WEIGHT * gap * gap;
+}
+
+function toSegmentCandidates(components: readonly TracedComponent[]): SegmentCandidate[] {
+  return components.map((component) => ({
+    component,
+    length: componentLength(component),
+    start: component.samples[0],
+    end: component.samples[component.samples.length - 1],
+  }));
+}
+
+function snapRingEndpoints(components: (TracedComponent | null)[]): void {
+  for (let index = 0; index < components.length; index += 1) {
+    const current = components[index];
+    const next = components[(index + 1) % components.length];
+    if (!current || !next) continue;
+
+    const currentEndIndex = current.samples.length - 1;
+    const currentEnd = current.samples[currentEndIndex];
+    const nextStart = next.samples[0];
+    const sharedPoint = {
+      x: 0.5 * (currentEnd.x + nextStart.x),
+      y: 0.5 * (currentEnd.y + nextStart.y),
+    };
+
+    current.samples[currentEndIndex] = replacePoint(currentEnd, sharedPoint);
+    next.samples[0] = replacePoint(nextStart, sharedPoint);
+  }
 }
 
 function sampleParameter(sample: TangentSample, warp: WarpField, direction: Point): number {
@@ -256,10 +411,7 @@ function reverseSamples(samples: readonly TangentSample[]): TangentSample[] {
   return samples.slice().reverse().map((sample) => ({
     x: sample.x,
     y: sample.y,
-    tangent: {
-      x: -sample.tangent.x,
-      y: -sample.tangent.y,
-    },
+    tangent: { x: -sample.tangent.x, y: -sample.tangent.y },
   }));
 }
 
@@ -275,9 +427,15 @@ function snapRunEndpoints(samples: readonly TangentSample[], startPoint: Point |
 }
 
 function replacePoint(sample: TangentSample, point: Point | null): TangentSample {
-  return point
-    ? { x: point.x, y: point.y, tangent: sample.tangent }
-    : sample;
+  return point ? { x: point.x, y: point.y, tangent: sample.tangent } : sample;
+}
+
+function componentLength(component: TracedComponent): number {
+  let length = 0;
+  for (let index = 1; index < component.samples.length; index += 1) {
+    length += distance(component.samples[index - 1], component.samples[index]);
+  }
+  return length;
 }
 
 class EndpointSolver {
@@ -337,6 +495,10 @@ function normalize(vector: Point): Point | null {
   const length = Math.hypot(vector.x, vector.y);
   if (length < 1e-12) return null;
   return { x: vector.x / length, y: vector.y / length };
+}
+
+function distance(first: Point, second: Point): number {
+  return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
 function clamp(value: number, min: number, max: number): number {
