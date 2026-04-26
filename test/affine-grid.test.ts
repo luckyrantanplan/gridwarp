@@ -27,7 +27,10 @@ const defaultSpec: AffineGridSpec = {
 };
 
 function approxEqual(actual: number, expected: number, epsilon = 1e-9): void {
-  assert.ok(Math.abs(actual - expected) <= epsilon, `expected ${actual} to be within ${epsilon} of ${expected}`);
+  const actualText = String(actual);
+  const epsilonText = String(epsilon);
+  const expectedText = String(expected);
+  assert.ok(Math.abs(actual - expected) <= epsilon, `expected ${actualText} to be within ${epsilonText} of ${expectedText}`);
 }
 
 function approxComplex(actual: { real: number; imag: number }, expected: { real: number; imag: number }, epsilon = 1e-9): void {

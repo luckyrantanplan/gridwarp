@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "esnext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["DOM", "ES2023"],
+    "lib": ["DOM", "ESNext"],
     "types": ["node"],
     "strict": true,
     "exactOptionalPropertyTypes": true,
@@ -15,6 +15,6 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

@@ -574,7 +574,7 @@ function createPointIndex(bucketSize: number): PointIndex {
   }
 
   function bucketKey(xBucket: number, yBucket: number): string {
-    return `${xBucket},${yBucket}`;
+    return `${String(xBucket)},${String(yBucket)}`;
   }
 
   return {
@@ -967,7 +967,7 @@ function render(): void {
   const field = createFieldContext(warp);
   const leafCells = collectLeafCells(width, height, warp);
 
-  scene.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  scene.setAttribute("viewBox", `0 0 ${String(width)} ${String(height)}`);
   scene.replaceChildren();
 
   const limit = maxWarpedRadius(width, height, currentTime);
@@ -980,7 +980,10 @@ function render(): void {
 
   scene.append(horizontalGroup, verticalGroup);
   syncTimeControls();
-  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsets.length} lines per axis · ${leafCells.length} leaf cells, smallest ${smallestLeafSize(leafCells).toFixed(1)}px`;
+  const offsetCount = String(offsets.length);
+  const leafCellCount = String(leafCells.length);
+  const smallestCell = smallestLeafSize(leafCells).toFixed(1);
+  caption.textContent = `static sample at t=${currentTime.toFixed(1)} · ${offsetCount} lines per axis · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 
 timeSlider.addEventListener("input", () => {
