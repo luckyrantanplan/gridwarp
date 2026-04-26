@@ -217,27 +217,34 @@ function clipComponentToRange(
     runs.push({ samples: currentSamples, clippedAtStart: currentClippedAtStart, clippedAtEnd: false });
   }
 
-  // A closed input component fully inside the parameter range produces a single run that
-  // was never broken by clipping. Emit it as a closed loop so its first/last samples are
-  // not snapped to the segment endpoints.
-  if (component.closed && runs.length === 1 && !runs[0].clippedAtStart && !runs[0].clippedAtEnd) {
-    const closedSamples = runs[0].samples.slice(0, -1);
-    if (closedSamples.length < 2) return [];
-    return [{ closed: true, samples: closedSamples }];
-  }
-
   const clippedComponents: TracedComponent[] = [];
   for (const run of runs) {
     if (run.samples.length < 2) continue;
-    const oriented = startParameter <= endParameter
-      ? { samples: run.samples, clippedAtStart: run.clippedAtStart, clippedAtEnd: run.clippedAtEnd }
-      : { samples: reverseSamples(run.samples), clippedAtStart: run.clippedAtEnd, clippedAtEnd: run.clippedAtStart };
+    const oriented = orientRun(run, startParameter <= endParameter);
+    if (!shouldRenderRun(oriented)) continue;
     clippedComponents.push({
       closed: false,
       samples: snapRunEndpoints(oriented.samples, oriented.clippedAtStart ? startPoint : null, oriented.clippedAtEnd ? endPoint : null),
     });
   }
   return clippedComponents;
+}
+
+function orientRun(run: ClipRun, forward: boolean): ClipRun {
+  if (forward) return run;
+  return {
+    samples: reverseSamples(run.samples),
+    clippedAtStart: run.clippedAtEnd,
+    clippedAtEnd: run.clippedAtStart,
+  };
+}
+
+function shouldRenderRun(run: ClipRun): boolean {
+  // Overlay segments represent a single finite segment between two solved endpoints.
+  // If the level set develops extra disconnected components entirely inside the
+  // parameter range, they are valid preimages of the infinite line but not of the
+  // intended endpoint-connected overlay segment.
+  return run.clippedAtStart || run.clippedAtEnd;
 }
 
 function sampleParameter(sample: TangentSample, warp: WarpField, direction: Point): number {
