@@ -37,8 +37,7 @@ const GRID_LINE_DENSITY_MULTIPLIER = 4;
 const GRID_LINE_SPACING = 1 / GRID_LINE_DENSITY_MULTIPLIER;
 const GRID_LINE_OFFSET = 0.5 * GRID_LINE_SPACING;
 
-const POLYGON_SCALAR_GRID_COLUMNS = 240;
-const POLYGON_SCALAR_GRID_ROWS = 240;
+const DEFAULT_POLYGON_SCALAR_GRID_SIZE = 128;
 const POLYGON_SCALAR_GRID_PADDING = 0.5;
 const DEFAULT_SCALAR_GAIN = 0.75;
 const DEFAULT_SCALAR_PLATEAU = 0.75;
@@ -46,7 +45,7 @@ const SCALAR_CONTROL_DECIMALS = 2;
 const SURFACE_WARP_JACOBIAN_EPSILON = 0.75;
 const SURFACE_WARP_REFERENCE_TIME = DEFAULT_TIME;
 const SURFACE_WARP_AMPLITUDE = 1.0;
-const SURFACE_WARP_ANGLE_OFFSET = 0.0;
+const SURFACE_WARP_ANGLE_OFFSET = 22.0 * Math.PI / 180.0;
 const VIEWPORT_MIN_SCALE = 0.15;
 const VIEWPORT_MAX_SCALE = 6.0;
 const VIEWPORT_MARGIN_FACTOR = 0.75;
@@ -120,22 +119,22 @@ interface PanState {
 }
 
 let currentTime = DEFAULT_TIME;
+let currentSampleGridSize = DEFAULT_POLYGON_SCALAR_GRID_SIZE;
 let currentGain = DEFAULT_SCALAR_GAIN;
 let currentPlateau = DEFAULT_SCALAR_PLATEAU;
-let scalarGrid = createAmplitudeGrid(currentGain, currentPlateau);
-const directionGrid = createDirectionGrid(scalarGrid.spec, {
-  columns: scalarGrid.spec.columns,
-  rows: scalarGrid.spec.rows,
-  angleOffset: SURFACE_WARP_ANGLE_OFFSET,
-});
-let amplitudeSurface = new BicubicGridSampler(scalarGrid);
-const directionSurface = new BicubicGridSampler(directionGrid);
+const initialSurfaceState = createSurfaceState(currentSampleGridSize, currentGain, currentPlateau);
+let scalarGrid = initialSurfaceState.scalarGrid;
+let amplitudeSurface = initialSurfaceState.amplitudeSurface;
+let directionSurface = initialSurfaceState.directionSurface;
 
 const scene = getRequiredElement("scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const caption = getRequiredElement("caption", (element): element is HTMLDivElement => element instanceof HTMLDivElement);
 const timeSlider = getRequiredElement("time-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeInput = getRequiredElement("time-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeValue = getRequiredElement("time-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
+const sampleGridSlider = getRequiredElement("sample-grid-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const sampleGridInput = getRequiredElement("sample-grid-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const sampleGridValue = getRequiredElement("sample-grid-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
 const gainSlider = getRequiredElement("gain-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const gainInput = getRequiredElement("gain-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const gainValue = getRequiredElement("gain-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
@@ -149,6 +148,8 @@ const diagonalsEnabled = getRequiredElement("diagonals-enabled", (element): elem
 const stage = getRequiredParentElement(scene);
 const minTime = Number(timeSlider.min);
 const maxTime = Number(timeSlider.max);
+const minSampleGridSize = Number(sampleGridSlider.min);
+const maxSampleGridSize = Number(sampleGridSlider.max);
 const minGain = Number(gainSlider.min);
 const maxGain = Number(gainSlider.max);
 const minPlateau = Number(plateauSlider.min);
@@ -350,19 +351,36 @@ function createSvgPath(pathData: string, stroke: string, strokeWidth: number): S
   return path;
 }
 
-function createAmplitudeGrid(gain: number, plateau: number) {
+function createAmplitudeGrid(sampleGridSize: number, gain: number, plateau: number) {
   return createPolygonScalarGrid(outerOctagonShape, {
-    columns: POLYGON_SCALAR_GRID_COLUMNS,
-    rows: POLYGON_SCALAR_GRID_ROWS,
+    columns: sampleGridSize,
+    rows: sampleGridSize,
     padding: POLYGON_SCALAR_GRID_PADDING,
     gain,
     plateau,
   });
 }
 
-function rebuildAmplitudeSurface(): void {
-  scalarGrid = createAmplitudeGrid(currentGain, currentPlateau);
-  amplitudeSurface = new BicubicGridSampler(scalarGrid);
+function createSurfaceState(sampleGridSize: number, gain: number, plateau: number) {
+  const nextScalarGrid = createAmplitudeGrid(sampleGridSize, gain, plateau);
+  const nextDirectionGrid = createDirectionGrid(nextScalarGrid.spec, {
+    columns: nextScalarGrid.spec.columns,
+    rows: nextScalarGrid.spec.rows,
+    angleOffset: SURFACE_WARP_ANGLE_OFFSET,
+  });
+
+  return {
+    scalarGrid: nextScalarGrid,
+    amplitudeSurface: new BicubicGridSampler(nextScalarGrid),
+    directionSurface: new BicubicGridSampler(nextDirectionGrid),
+  };
+}
+
+function rebuildSurfaces(): void {
+  const nextSurfaceState = createSurfaceState(currentSampleGridSize, currentGain, currentPlateau);
+  scalarGrid = nextSurfaceState.scalarGrid;
+  amplitudeSurface = nextSurfaceState.amplitudeSurface;
+  directionSurface = nextSurfaceState.directionSurface;
 }
 
 function lineOffsets(limit: number): number[] {
@@ -404,14 +422,22 @@ function syncTimeControls(): void {
 }
 
 function syncScalarControls(): void {
+  const formattedSampleGridSize = formatSampleGridSizeValue(currentSampleGridSize);
   const formattedGain = formatScalarControlValue(currentGain);
   const formattedPlateau = formatScalarControlValue(currentPlateau);
+  sampleGridSlider.value = formattedSampleGridSize;
+  sampleGridInput.value = formattedSampleGridSize;
+  sampleGridValue.textContent = formattedSampleGridSize;
   gainSlider.value = formattedGain;
   gainInput.value = formattedGain;
   gainValue.textContent = formattedGain;
   plateauSlider.value = formattedPlateau;
   plateauInput.value = formattedPlateau;
   plateauValue.textContent = formattedPlateau;
+}
+
+function formatSampleGridSizeValue(value: number): string {
+  return String(Math.round(value));
 }
 
 function formatScalarControlValue(value: number): string {
@@ -441,6 +467,21 @@ function commitTimeInputValue(): void {
   setCurrentTime(Number(rawValue));
 }
 
+function setCurrentSampleGridSize(nextSampleGridSize: number): void {
+  if (!Number.isFinite(nextSampleGridSize)) {
+    syncScalarControls();
+    return;
+  }
+  const clampedSampleGridSize = Math.round(clamp(nextSampleGridSize, minSampleGridSize, maxSampleGridSize));
+  if (clampedSampleGridSize === currentSampleGridSize) {
+    syncScalarControls();
+    return;
+  }
+  currentSampleGridSize = clampedSampleGridSize;
+  rebuildSurfaces();
+  render();
+}
+
 function setCurrentGain(nextGain: number): void {
   if (!Number.isFinite(nextGain)) {
     syncScalarControls();
@@ -452,7 +493,7 @@ function setCurrentGain(nextGain: number): void {
     return;
   }
   currentGain = clampedGain;
-  rebuildAmplitudeSurface();
+  rebuildSurfaces();
   render();
 }
 
@@ -467,8 +508,17 @@ function setCurrentPlateau(nextPlateau: number): void {
     return;
   }
   currentPlateau = clampedPlateau;
-  rebuildAmplitudeSurface();
+  rebuildSurfaces();
   render();
+}
+
+function commitSampleGridInputValue(): void {
+  const rawValue = sampleGridInput.value.trim();
+  if (rawValue === "") {
+    syncScalarControls();
+    return;
+  }
+  setCurrentSampleGridSize(Number(rawValue));
 }
 
 function commitGainInputValue(): void {
@@ -549,7 +599,8 @@ function compactCaption(
   gridIsEnabled: boolean,
 ): string {
   const gridLabel = gridIsEnabled ? `${offsetCount}/axis` : "grid off";
-  return `t=${time.toFixed(1)} · ${activeSampleCount} active · ${gridLabel} · ${leafCellCount} cells · min ${smallestCell}px`;
+  const sampleGridLabel = `${String(currentSampleGridSize)}x${String(currentSampleGridSize)}`;
+  return `t=${time.toFixed(1)} · ${sampleGridLabel} · ${activeSampleCount} active · ${gridLabel} · ${leafCellCount} cells · min ${smallestCell}px`;
 }
 
 function fullCaption(
@@ -561,7 +612,8 @@ function fullCaption(
   gridIsEnabled: boolean,
 ): string {
   const gridLabel = gridIsEnabled ? `${offsetCount} lines per axis` : "grid tracing disabled";
-  return `C1 scalar-amplitude warp at t=${time.toFixed(1)} · ${activeSampleCount} active samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
+  const sampleGridLabel = `${String(currentSampleGridSize)}x${String(currentSampleGridSize)} sample grid`;
+  return `C1 scalar-amplitude warp at t=${time.toFixed(1)} · ${sampleGridLabel} · ${activeSampleCount} active samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 
 timeSlider.addEventListener("input", () => {
@@ -576,6 +628,20 @@ timeInput.addEventListener("keydown", (event: KeyboardEvent) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   commitTimeInputValue();
+});
+
+sampleGridSlider.addEventListener("input", () => {
+  setCurrentSampleGridSize(Number(sampleGridSlider.value));
+});
+
+sampleGridInput.addEventListener("change", () => {
+  commitSampleGridInputValue();
+});
+
+sampleGridInput.addEventListener("keydown", (event: KeyboardEvent) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  commitSampleGridInputValue();
 });
 
 gainSlider.addEventListener("input", () => {

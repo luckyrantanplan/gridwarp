@@ -17,13 +17,15 @@ export function createDirectionGrid(bounds: BoundingBox, settings: DirectionGrid
     maxY: bounds.maxY,
   };
   const grid = createRegularGrid(spec, 2);
+  const angle = settings.angleOffset;
+  const real = Math.cos(angle);
+  const imaginary = Math.sin(angle);
 
   for (let row = 0; row < grid.spec.rows; row += 1) {
     for (let column = 0; column < grid.spec.columns; column += 1) {
-      const point = regularGridPoint(grid, column, row);
-      const angle = Math.atan2(point.y, point.x) + settings.angleOffset;
-      grid.values[regularGridValueIndex(grid, column, row, 0)] = Math.cos(angle);
-      grid.values[regularGridValueIndex(grid, column, row, 1)] = Math.sin(angle);
+      regularGridPoint(grid, column, row);
+      grid.values[regularGridValueIndex(grid, column, row, 0)] = real;
+      grid.values[regularGridValueIndex(grid, column, row, 1)] = imaginary;
     }
   }
 
