@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BicubicGridSampler } from "../src/lib/bicubic-grid-sampler.js";
+import { mapPlotPoint, sampleTransferCurve, transferCurvePathData } from "../src/demo/transfer-curve.js";
 import { createDirectionGrid } from "../src/lib/direction-grid.js";
 import { PolygonShape } from "../src/lib/polygon-shape.js";
 import { AngleDirectedSurfaceWarpField } from "../src/lib/scalar-surface-warp-field.js";
@@ -139,6 +140,25 @@ void test("createPolygonScalarGrid uses plateau as the clamp threshold", () => {
   approximatelyEqual(lowPlateauGrid.values[centerIndex], 0.5, DEFAULT_EPSILON);
   approximatelyEqual(highPlateauGrid.values[centerIndex], satur(0.35 * 4.0, 1.5), DEFAULT_EPSILON);
   assert.ok(highPlateauGrid.values[centerIndex] > lowPlateauGrid.values[centerIndex]);
+});
+
+void test("sampleTransferCurve follows satur(gain * x, plateau)", () => {
+  const samples = sampleTransferCurve(1.5, 0.75, 5);
+
+  approximatelyEqual(samples[0].x, 0.0, DEFAULT_EPSILON);
+  approximatelyEqual(samples[0].y, 0.0, DEFAULT_EPSILON);
+  approximatelyEqual(samples[4].x, 1.0, DEFAULT_EPSILON);
+  approximatelyEqual(samples[4].y, 0.75, DEFAULT_EPSILON);
+  approximatelyEqual(samples[2].y, satur(1.5 * 0.5, 0.75), DEFAULT_EPSILON);
+});
+
+void test("transferCurvePathData maps samples into plot coordinates", () => {
+  const samples = [{ x: 0.0, y: 0.0 }, { x: 1.0, y: 1.0 }];
+  const bounds = { minX: 0.0, maxX: 1.0, minY: 0.0, maxY: 1.0 };
+  const frame = { width: 100.0, height: 80.0, paddingLeft: 10.0, paddingRight: 20.0, paddingTop: 5.0, paddingBottom: 15.0 };
+
+  assert.equal(transferCurvePathData(samples, bounds, frame), "M10.00 65.00 L80.00 5.00");
+  assert.deepEqual(mapPlotPoint({ x: 1.0, y: 1.0 }, bounds, frame), { x: 80.0, y: 5.0 });
 });
 
 void test("AngleDirectedSurfaceWarpField uses scalar values as complex-angle amplitudes", () => {
