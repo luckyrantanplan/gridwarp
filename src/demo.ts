@@ -11,23 +11,15 @@ import {
 import { createWarpedOctagonOverlay, type OctagonOverlaySettings } from "./demo/octagon-overlay.js";
 import { regularPolygonVertices } from "./demo/polyline-overlay.js";
 import { SvgContourRenderer } from "./demo/svg-contour-renderer.js";
-import { DisplacementFieldWarpField } from "./lib/displacement-field-warp-field.js";
+import { BicubicGridSampler } from "./lib/bicubic-grid-sampler.js";
 import {
   INNER_OCTAGON_RADIUS,
   OUTER_OCTAGON_RADIUS,
 } from "./lib/deformation-field.js";
-import {
-  countValidSamples,
-  sampleDisplacementField,
-  type PerlinDiskShapeSettings,
-} from "./lib/polygon-displacement-field.js";
-import {
-  createPolygonMeshFromPoints,
-  refinePolygonMesh,
-  subdividePolygonForGrid,
-  type PolygonMesh,
-} from "./lib/polygon-mesh.js";
-import { computeDiskParameterization } from "./lib/polygon-parameterization.js";
+import { createDirectionGrid } from "./lib/direction-grid.js";
+import { PolygonShape } from "./lib/polygon-shape.js";
+import { AngleDirectedSurfaceWarpField } from "./lib/scalar-surface-warp-field.js";
+import { countNonZeroSamples, createPolygonScalarGrid } from "./lib/scalar-grid.js";
 import type { Cell, Point, WarpField } from "./demo/types.js";
 import { WarpLinearField } from "./demo/warp-scalar-fields.js";
 
@@ -37,14 +29,16 @@ const GRID_LINE_DENSITY_MULTIPLIER = 4;
 const GRID_LINE_SPACING = 1 / GRID_LINE_DENSITY_MULTIPLIER;
 const GRID_LINE_OFFSET = 0.5 * GRID_LINE_SPACING;
 
-const POLYGON_DISPLACEMENT_FIELD_COLUMNS = 240;
-const POLYGON_DISPLACEMENT_FIELD_ROWS = 240;
-const POLYGON_DISPLACEMENT_JACOBIAN_EPSILON = 0.75;
-const POLYGON_DISPLACEMENT_REFERENCE_TIME = DEFAULT_TIME;
-const POLYGON_BOUNDARY_SEGMENT_GRID_MULTIPLIER = 2.0;
-const POLYGON_BOUNDARY_MIN_SEGMENTS_PER_EDGE = 1;
-const POLYGON_BOUNDARY_MAX_SEGMENTS_PER_EDGE = 128;
-const POLYGON_MESH_REFINEMENT_SEGMENTS_PER_TRIANGLE_EDGE = 2;
+const POLYGON_SCALAR_GRID_COLUMNS = 240;
+const POLYGON_SCALAR_GRID_ROWS = 240;
+const POLYGON_SCALAR_GRID_PADDING = 0.5;
+const DEFAULT_SCALAR_GAIN = 0.75;
+const DEFAULT_SCALAR_PLATEAU = 0.75;
+const SCALAR_CONTROL_DECIMALS = 2;
+const SURFACE_WARP_JACOBIAN_EPSILON = 0.75;
+const SURFACE_WARP_REFERENCE_TIME = DEFAULT_TIME;
+const SURFACE_WARP_AMPLITUDE = 1.0;
+const SURFACE_WARP_ANGLE_OFFSET = 0.0;
 
 const STROKE_WIDTH = 2.2;
 const PATH_DECIMALS = 2;
@@ -84,20 +78,39 @@ const tracerSettings: ContourTracerSettings = {
 
 const contourTracer = new ContourTracer(tracerSettings);
 const contourRenderer = new SvgContourRenderer(STROKE_WIDTH, PATH_DECIMALS);
-const outerOctagonMesh = createParameterizedOuterOctagonMesh();
+const outerOctagonShape = new PolygonShape(regularPolygonVertices(8, OUTER_OCTAGON_RADIUS));
+let currentTime = DEFAULT_TIME;
+let currentGain = DEFAULT_SCALAR_GAIN;
+let currentPlateau = DEFAULT_SCALAR_PLATEAU;
+let scalarGrid = createAmplitudeGrid(currentGain, currentPlateau);
+const directionGrid = createDirectionGrid(scalarGrid.spec, {
+  columns: scalarGrid.spec.columns,
+  rows: scalarGrid.spec.rows,
+  angleOffset: SURFACE_WARP_ANGLE_OFFSET,
+});
+let amplitudeSurface = new BicubicGridSampler(scalarGrid);
+const directionSurface = new BicubicGridSampler(directionGrid);
 
 const scene = getRequiredElement("scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const caption = getRequiredElement("caption", (element): element is HTMLDivElement => element instanceof HTMLDivElement);
 const timeSlider = getRequiredElement("time-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeInput = getRequiredElement("time-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeValue = getRequiredElement("time-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
+const gainSlider = getRequiredElement("gain-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const gainInput = getRequiredElement("gain-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const gainValue = getRequiredElement("gain-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
+const plateauSlider = getRequiredElement("plateau-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const plateauInput = getRequiredElement("plateau-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const plateauValue = getRequiredElement("plateau-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
 const gridEnabled = getRequiredElement("grid-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const diagonalsEnabled = getRequiredElement("diagonals-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const stage = getRequiredParentElement(scene);
 const minTime = Number(timeSlider.min);
 const maxTime = Number(timeSlider.max);
-
-let currentTime = DEFAULT_TIME;
+const minGain = Number(gainSlider.min);
+const maxGain = Number(gainSlider.max);
+const minPlateau = Number(plateauSlider.min);
+const maxPlateau = Number(plateauSlider.max);
 
 function getRequiredElement<TElement extends Element>(
   id: string,
@@ -122,6 +135,21 @@ function getRequiredParentElement(element: Element): HTMLElement {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function createAmplitudeGrid(gain: number, plateau: number) {
+  return createPolygonScalarGrid(outerOctagonShape, {
+    columns: POLYGON_SCALAR_GRID_COLUMNS,
+    rows: POLYGON_SCALAR_GRID_ROWS,
+    padding: POLYGON_SCALAR_GRID_PADDING,
+    gain,
+    plateau,
+  });
+}
+
+function rebuildAmplitudeSurface(): void {
+  scalarGrid = createAmplitudeGrid(currentGain, currentPlateau);
+  amplitudeSurface = new BicubicGridSampler(scalarGrid);
 }
 
 function lineOffsets(limit: number): number[] {
@@ -151,34 +179,6 @@ function appendContourFamily(
   }
 }
 
-function createParameterizedOuterOctagonMesh(): PolygonMesh {
-  const polygonPoints = regularPolygonVertices(8, OUTER_OCTAGON_RADIUS);
-  const subdividedPoints = subdividePolygonForGrid(polygonPoints, {
-    columns: POLYGON_DISPLACEMENT_FIELD_COLUMNS,
-    rows: POLYGON_DISPLACEMENT_FIELD_ROWS,
-    segmentLengthMultiplier: POLYGON_BOUNDARY_SEGMENT_GRID_MULTIPLIER,
-    minSegmentsPerEdge: POLYGON_BOUNDARY_MIN_SEGMENTS_PER_EDGE,
-    maxSegmentsPerEdge: POLYGON_BOUNDARY_MAX_SEGMENTS_PER_EDGE,
-  });
-  const boundaryMesh = createPolygonMeshFromPoints(subdividedPoints);
-  const mesh = refinePolygonMesh(boundaryMesh, {
-    segmentsPerTriangleEdge: POLYGON_MESH_REFINEMENT_SEGMENTS_PER_TRIANGLE_EDGE,
-  });
-  computeDiskParameterization(mesh);
-  return mesh;
-}
-
-function polygonDisplacementSettings(time: number): PerlinDiskShapeSettings {
-  const amplitudeScale = Math.max(time / POLYGON_DISPLACEMENT_REFERENCE_TIME, 0);
-  return {
-    frequency: 3.0,
-    radialAmplitude: 0.08 * amplitudeScale,
-    rotationAmplitude: 0.75 * amplitudeScale,
-    vectorAmplitude: 0.04 * amplitudeScale,
-    falloffPower: 2.0,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
@@ -188,6 +188,21 @@ function syncTimeControls(): void {
   timeSlider.value = formattedTime;
   timeInput.value = formattedTime;
   timeValue.textContent = formattedTime;
+}
+
+function syncScalarControls(): void {
+  const formattedGain = formatScalarControlValue(currentGain);
+  const formattedPlateau = formatScalarControlValue(currentPlateau);
+  gainSlider.value = formattedGain;
+  gainInput.value = formattedGain;
+  gainValue.textContent = formattedGain;
+  plateauSlider.value = formattedPlateau;
+  plateauInput.value = formattedPlateau;
+  plateauValue.textContent = formattedPlateau;
+}
+
+function formatScalarControlValue(value: number): string {
+  return value.toFixed(SCALAR_CONTROL_DECIMALS);
 }
 
 function setCurrentTime(nextTime: number): void {
@@ -213,21 +228,68 @@ function commitTimeInputValue(): void {
   setCurrentTime(Number(rawValue));
 }
 
+function setCurrentGain(nextGain: number): void {
+  if (!Number.isFinite(nextGain)) {
+    syncScalarControls();
+    return;
+  }
+  const clampedGain = clamp(nextGain, minGain, maxGain);
+  if (clampedGain === currentGain) {
+    syncScalarControls();
+    return;
+  }
+  currentGain = clampedGain;
+  rebuildAmplitudeSurface();
+  render();
+}
+
+function setCurrentPlateau(nextPlateau: number): void {
+  if (!Number.isFinite(nextPlateau)) {
+    syncScalarControls();
+    return;
+  }
+  const clampedPlateau = clamp(nextPlateau, minPlateau, maxPlateau);
+  if (clampedPlateau === currentPlateau) {
+    syncScalarControls();
+    return;
+  }
+  currentPlateau = clampedPlateau;
+  rebuildAmplitudeSurface();
+  render();
+}
+
+function commitGainInputValue(): void {
+  const rawValue = gainInput.value.trim();
+  if (rawValue === "") {
+    syncScalarControls();
+    return;
+  }
+  setCurrentGain(Number(rawValue));
+}
+
+function commitPlateauInputValue(): void {
+  const rawValue = plateauInput.value.trim();
+  if (rawValue === "") {
+    syncScalarControls();
+    return;
+  }
+  setCurrentPlateau(Number(rawValue));
+}
+
 function render(): void {
   const width = stage.clientWidth;
   const height = stage.clientHeight;
-
-  const displacementField = sampleDisplacementField(
-    outerOctagonMesh,
-    polygonDisplacementSettings(currentTime),
-    POLYGON_DISPLACEMENT_FIELD_COLUMNS,
-    POLYGON_DISPLACEMENT_FIELD_ROWS,
-  );
-  const warp = new DisplacementFieldWarpField(
+  const amplitudeScale = SURFACE_WARP_AMPLITUDE * Math.max(currentTime / SURFACE_WARP_REFERENCE_TIME, 0.0);
+  const warp = new AngleDirectedSurfaceWarpField(
     width,
     height,
-    displacementField,
-    POLYGON_DISPLACEMENT_JACOBIAN_EPSILON,
+    outerOctagonShape,
+    amplitudeSurface,
+    directionSurface,
+    {
+      finiteDifferenceEpsilon: SURFACE_WARP_JACOBIAN_EPSILON,
+      amplitudeScale,
+    },
   );
   const leafCells: Cell[] = new LeafCellCollector(width, height, warp, leafCellSettings).collect();
 
@@ -254,11 +316,37 @@ function render(): void {
 
   scene.append(createWarpedOctagonOverlay(warp, leafCells, contourTracer, contourRenderer, overlaySettings));
   syncTimeControls();
+  syncScalarControls();
   const leafCellCount = String(leafCells.length);
   const smallestCell = smallestLeafCellSize(leafCells, leafCellSettings.maxContourCellSize).toFixed(1);
-  const validSampleCount = String(countValidSamples(displacementField));
-  const gridLabel = gridEnabled.checked ? `${offsetCount} lines per axis` : "grid tracing disabled";
-  caption.textContent = `polygon displacement at t=${currentTime.toFixed(1)} · ${validSampleCount} valid samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
+  const activeSampleCount = String(countNonZeroSamples(scalarGrid));
+  caption.textContent = width < 720
+    ? compactCaption(currentTime, activeSampleCount, offsetCount, leafCellCount, smallestCell, gridEnabled.checked)
+    : fullCaption(currentTime, activeSampleCount, offsetCount, leafCellCount, smallestCell, gridEnabled.checked);
+}
+
+function compactCaption(
+  time: number,
+  activeSampleCount: string,
+  offsetCount: string,
+  leafCellCount: string,
+  smallestCell: string,
+  gridIsEnabled: boolean,
+): string {
+  const gridLabel = gridIsEnabled ? `${offsetCount}/axis` : "grid off";
+  return `t=${time.toFixed(1)} · ${activeSampleCount} active · ${gridLabel} · ${leafCellCount} cells · min ${smallestCell}px`;
+}
+
+function fullCaption(
+  time: number,
+  activeSampleCount: string,
+  offsetCount: string,
+  leafCellCount: string,
+  smallestCell: string,
+  gridIsEnabled: boolean,
+): string {
+  const gridLabel = gridIsEnabled ? `${offsetCount} lines per axis` : "grid tracing disabled";
+  return `C1 scalar-amplitude warp at t=${time.toFixed(1)} · ${activeSampleCount} active samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 
 timeSlider.addEventListener("input", () => {
@@ -273,6 +361,34 @@ timeInput.addEventListener("keydown", (event: KeyboardEvent) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   commitTimeInputValue();
+});
+
+gainSlider.addEventListener("input", () => {
+  setCurrentGain(Number(gainSlider.value));
+});
+
+gainInput.addEventListener("change", () => {
+  commitGainInputValue();
+});
+
+gainInput.addEventListener("keydown", (event: KeyboardEvent) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  commitGainInputValue();
+});
+
+plateauSlider.addEventListener("input", () => {
+  setCurrentPlateau(Number(plateauSlider.value));
+});
+
+plateauInput.addEventListener("change", () => {
+  commitPlateauInputValue();
+});
+
+plateauInput.addEventListener("keydown", (event: KeyboardEvent) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  commitPlateauInputValue();
 });
 
 gridEnabled.addEventListener("change", () => {

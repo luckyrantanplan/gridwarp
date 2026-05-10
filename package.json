@@ -1,13 +1,14 @@
 {
   "name": "gridwarp",
   "version": "1.0.0",
-  "description": "Warped grid demo with bilinear affine warp sampling",
+  "description": "Scalar-warp grid demo with bicubic interpolation",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
+    "serve": "tsx ./index.ts",
     "export:video": "node ./scripts/export-video.mjs",
     "test": "tsx --test test/**/*.test.ts",
     "test:coverage": "tsx --test --experimental-test-coverage test/**/*.test.ts"

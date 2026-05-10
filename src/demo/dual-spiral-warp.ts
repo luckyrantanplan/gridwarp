@@ -1,38 +1,7 @@
 /**
- * Demo-side helpers for building and probing the dual-spiral octagon-masked warp field.
+ * Demo-side helpers for probing visible bounds of a screen-space warp field.
  */
-import {
-  createAffineFieldGrid,
-  type AffineGridSpec,
-} from "../lib/affine-field-grid.js";
-import { createDualSpiralOctagonAffinePair } from "../lib/deformation-field.js";
-import { AffineGridWarpField } from "../lib/warp-field.js";
 import type { WarpField } from "./types.js";
-
-/**
- * Creates the screen-space warp field used by the demo from the dual-spiral deformation.
- */
-export function createDualSpiralWarpField(
-  width: number,
-  height: number,
-  time: number,
-  columns: number,
-  rows: number,
-  finiteDifferenceEpsilon: number,
-): WarpField {
-  const { xMax, yMax } = visibleBounds(width, height);
-  const spec: AffineGridSpec = {
-    columns,
-    rows,
-    minReal: -xMax,
-    maxReal: xMax,
-    minImag: -yMax,
-    maxImag: yMax,
-    time,
-  };
-  const affineFieldGrid = createAffineFieldGrid(spec, createDualSpiralOctagonAffinePair);
-  return new AffineGridWarpField(width, height, spec, affineFieldGrid, finiteDifferenceEpsilon);
-}
 
 /**
  * Computes the contour offset limit by sampling the warp on the visible plane diagonal.
