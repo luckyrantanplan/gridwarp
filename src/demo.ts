@@ -2,7 +2,7 @@
  * Demo entry point: wires the viewport, tracing pipeline, and SVG rendering together.
  */
 import { ContourTracer, type ContourTracerSettings } from "./demo/contour-tracer.js";
-import { maxWarpedRadius } from "./demo/dual-spiral-warp.js";
+import { maxWarpedRadius } from "./demo/visible-warp-bounds.js";
 import {
   LeafCellCollector,
   smallestLeafCellSize,
@@ -15,7 +15,7 @@ import { BicubicGridSampler } from "./lib/bicubic-grid-sampler.js";
 import {
   INNER_OCTAGON_RADIUS,
   OUTER_OCTAGON_RADIUS,
-} from "./lib/deformation-field.js";
+} from "./lib/octagon-constants.js";
 import { createDirectionGrid } from "./lib/direction-grid.js";
 import { PolygonShape } from "./lib/polygon-shape.js";
 import { AngleDirectedSurfaceWarpField } from "./lib/scalar-surface-warp-field.js";
