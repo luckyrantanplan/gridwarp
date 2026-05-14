@@ -4,9 +4,21 @@ import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  DEFAULT_PARAMETERS as DEFAULT_NOISE_PARAMETERS,
+  generateDisplacementPreview,
+  PARAMETER_DEFINITIONS as NOISE_PARAMETER_DEFINITIONS,
+  PARAMETER_GROUPS as NOISE_PARAMETER_GROUPS,
+} from "noise_generator";
 import { parseGeometrySvg } from "./parse-geometry-svg.js";
 import { renderWarpScene } from "./render-warp-scene.js";
 import { parseWarpRequest, WarpRequestError, type WarpResponse } from "../shared/warp-request.js";
+import {
+  NoisePreviewRequestError,
+  parseNoisePreviewRequest,
+  type NoisePreviewResponse,
+  type NoisePreviewSchemaResponse,
+} from "../shared/noise-preview.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDirectory = path.dirname(currentFile);
@@ -26,12 +38,23 @@ async function routeRequest(request: IncomingMessage, response: ServerResponse):
   }
 
   const requestUrl = new URL(request.url, "http://localhost");
+  const method = request.method ?? "GET";
+
   if (requestUrl.pathname === "/api/warp") {
     await handleWarpRoute(request, response);
     return;
   }
 
-  const method = request.method ?? "GET";
+  if (requestUrl.pathname === "/api/noise/schema") {
+    handleNoiseSchemaRoute(method, response);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/noise/generate") {
+    await handleNoiseGenerateRoute(request, response);
+    return;
+  }
+
   if (method !== "GET" && method !== "HEAD") {
     response.writeHead(405, {
       Allow: "GET, HEAD, POST",
@@ -78,6 +101,50 @@ async function handleWarpRoute(request: IncomingMessage, response: ServerRespons
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown warp error";
     const status = error instanceof WarpRequestError ? 400 : 500;
+    sendText(response, status, message);
+  }
+}
+
+function handleNoiseSchemaRoute(method: string, response: ServerResponse): void {
+  if (method !== "GET" && method !== "HEAD") {
+    response.writeHead(405, {
+      Allow: "GET, HEAD",
+      "content-type": "text/plain; charset=utf-8",
+    });
+    response.end(method === "HEAD" ? undefined : "Method not allowed");
+    return;
+  }
+
+  const payload: NoisePreviewSchemaResponse = {
+    defaultParameters: DEFAULT_NOISE_PARAMETERS,
+    parameterGroups: NOISE_PARAMETER_GROUPS,
+    parameterDefinitions: NOISE_PARAMETER_DEFINITIONS,
+  };
+  sendJson(response, 200, payload, method === "HEAD");
+}
+
+async function handleNoiseGenerateRoute(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (request.method !== "POST") {
+    response.writeHead(405, {
+      Allow: "POST",
+      "content-type": "text/plain; charset=utf-8",
+    });
+    response.end("Method not allowed");
+    return;
+  }
+
+  try {
+    const body = await readRequestBody(request);
+    const noiseRequest = parseNoisePreviewRequest(body);
+    const preview = generateDisplacementPreview(noiseRequest.parameters);
+    const payload: NoisePreviewResponse = {
+      parameters: preview.parameters,
+      svg: preview.svg,
+    };
+    sendJson(response, 200, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown noise preview error";
+    const status = error instanceof NoisePreviewRequestError || error instanceof WarpRequestError ? 400 : 500;
     sendText(response, status, message);
   }
 }
@@ -184,12 +251,12 @@ function toBuffer(chunk: unknown): Buffer {
   throw new WarpRequestError("Request body must contain text data.");
 }
 
-function sendJson(response: ServerResponse, statusCode: number, payload: WarpResponse): void {
+function sendJson(response: ServerResponse, statusCode: number, payload: WarpResponse | NoisePreviewResponse | NoisePreviewSchemaResponse, headOnly = false): void {
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
   });
-  response.end(JSON.stringify(payload));
+  response.end(headOnly ? undefined : JSON.stringify(payload));
 }
 
 function sendText(response: ServerResponse, statusCode: number, message: string): void {

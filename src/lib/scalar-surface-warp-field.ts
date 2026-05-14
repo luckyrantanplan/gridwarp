@@ -1,6 +1,11 @@
 import { BicubicGridSampler } from "./bicubic-grid-sampler.js";
 import { EPSILON, makePoint2, type Point2 } from "./polygon-geometry.js";
 import type { BoundingBox, PolygonShape } from "./polygon-shape.js";
+import {
+  createWorldScreenTransform,
+  worldPointFromScreen,
+  type WorldScreenTransform,
+} from "./world-screen-transform.js";
 import type { Bounds, Jacobian, WarpField, WarpValue } from "./warp-field.js";
 
 export interface AngleDirectedSurfaceWarpSettings {
@@ -9,8 +14,7 @@ export interface AngleDirectedSurfaceWarpSettings {
 }
 
 export class AngleDirectedSurfaceWarpField implements WarpField {
-  private readonly planeWidth: number;
-  private readonly planeHeight: number;
+  private readonly transform: WorldScreenTransform;
 
   constructor(
     private readonly width: number,
@@ -22,8 +26,7 @@ export class AngleDirectedSurfaceWarpField implements WarpField {
     private readonly settings: AngleDirectedSurfaceWarpSettings,
   ) {
     validateAngleDirectedSurfaceWarpSettings(settings);
-    this.planeWidth = worldBounds.maxX - worldBounds.minX;
-    this.planeHeight = worldBounds.maxY - worldBounds.minY;
+    this.transform = createWorldScreenTransform(width, height, worldBounds);
   }
 
   valueAt(screenX: number, screenY: number): WarpValue {
@@ -81,11 +84,10 @@ export class AngleDirectedSurfaceWarpField implements WarpField {
   }
 
   private toPlane(screenX: number, screenY: number): Point2 {
-    const normalizedX = this.width > 0 ? clamp(screenX, 0, this.width) / this.width : 0.5;
-    const normalizedY = this.height > 0 ? clamp(screenY, 0, this.height) / this.height : 0.5;
-    return makePoint2(
-      this.worldBounds.minX + normalizedX * this.planeWidth,
-      this.worldBounds.maxY - normalizedY * this.planeHeight,
+    return worldPointFromScreen(
+      clamp(screenX, 0, this.width),
+      clamp(screenY, 0, this.height),
+      this.transform,
     );
   }
 }

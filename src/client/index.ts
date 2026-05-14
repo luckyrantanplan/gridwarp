@@ -5,6 +5,7 @@ import {
   type PlotBounds,
   type PlotFrame,
 } from "./transfer-curve.js";
+import { initializeNoisePreview } from "./noise-preview.js";
 import { createInitialGeometry } from "./initial-geometry.js";
 import { satur } from "../lib/saturation.js";
 import type { WarpRequest, WarpResponse } from "../shared/warp-request.js";
@@ -781,6 +782,7 @@ const resizeObserver = new ResizeObserver(() => {
 });
 
 resizeObserver.observe(stage);
+initializeNoisePreview();
 syncTimeControls();
 syncScalarControls();
 renderTransferPlot();

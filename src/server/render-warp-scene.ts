@@ -9,6 +9,11 @@ import { PolygonShape, type BoundingBox } from "../lib/polygon-shape.js";
 import { resolveRegularGridSpec, type RegularGridSpec } from "../lib/regular-grid.js";
 import { AngleDirectedSurfaceWarpField } from "../lib/scalar-surface-warp-field.js";
 import { countNonZeroSamples, createPolygonScalarGrid } from "../lib/scalar-grid.js";
+import {
+  createWorldScreenTransform,
+  screenPointFromWorld,
+  type WorldScreenTransform,
+} from "../lib/world-screen-transform.js";
 import { WarpRequestError, type WarpGeometryPresentation, type WarpRequest } from "../shared/warp-request.js";
 import type { ParsedWarpGeometry } from "./parse-geometry-svg.js";
 
@@ -156,10 +161,11 @@ function renderIdentityShapeSetMarkup(
   }
 
   const attributes = presentationAttributes(presentation);
+  const transform = createWorldScreenTransform(renderWidth, renderHeight, worldBounds);
 
   const parts = [`<g ${attributes.join(" ")}>`];
   for (const shape of shapes) {
-    parts.push(`<path fill="none" d="${escapeAttribute(identityPathData(shape, renderWidth, renderHeight, worldBounds))}" />`);
+    parts.push(`<path fill="none" d="${escapeAttribute(identityPathData(shape, transform))}" />`);
   }
   parts.push("</g>");
   return parts.join("");
@@ -167,18 +173,16 @@ function renderIdentityShapeSetMarkup(
 
 function identityPathData(
   shape: WarpedPolylineShape,
-  renderWidth: number,
-  renderHeight: number,
-  worldBounds: BoundingBox,
+  transform: WorldScreenTransform,
 ): string {
   const points = shapePoints(shape);
   if (points.length === 0) {
     return "";
   }
 
-  let pathData = moveTo(screenPoint(points[0], renderWidth, renderHeight, worldBounds));
+  let pathData = moveTo(screenPoint(points[0], transform));
   for (const point of points.slice(1)) {
-    pathData += lineTo(screenPoint(point, renderWidth, renderHeight, worldBounds));
+    pathData += lineTo(screenPoint(point, transform));
   }
   if (shape.closed) {
     pathData += " Z";
@@ -201,15 +205,8 @@ function shapePoints(shape: WarpedPolylineShape): Point[] {
   return points;
 }
 
-function screenPoint(point: Point, renderWidth: number, renderHeight: number, worldBounds: BoundingBox): Point {
-  const worldWidth = worldBounds.maxX - worldBounds.minX;
-  const worldHeight = worldBounds.maxY - worldBounds.minY;
-  const normalizedX = worldWidth > 0.0 ? (point.x - worldBounds.minX) / worldWidth : 0.5;
-  const normalizedY = worldHeight > 0.0 ? (worldBounds.maxY - point.y) / worldHeight : 0.5;
-  return {
-    x: normalizedX * renderWidth,
-    y: normalizedY * renderHeight,
-  };
+function screenPoint(point: Point, transform: WorldScreenTransform): Point {
+  return screenPointFromWorld(point, transform);
 }
 
 function moveTo(point: Point): string {

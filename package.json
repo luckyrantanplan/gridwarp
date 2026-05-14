@@ -28,6 +28,7 @@
     "typescript-eslint": "^8.59.0"
   },
   "dependencies": {
+    "noise_generator": "file:../noise_generator",
     "prettier": "^3.8.3"
   }
 }

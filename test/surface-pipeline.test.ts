@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BicubicGridSampler } from "../src/lib/bicubic-grid-sampler.js";
+import { createInitialGeometry } from "../src/client/initial-geometry.js";
 import { mapPlotPoint, sampleTransferCurve, transferCurvePathData } from "../src/client/transfer-curve.js";
 import { createDirectionGrid } from "../src/lib/direction-grid.js";
 import { PolygonShape } from "../src/lib/polygon-shape.js";
@@ -10,6 +11,11 @@ import { SvgContourRenderer } from "../src/render/svg-contour-renderer.js";
 import { AngleDirectedSurfaceWarpField } from "../src/lib/scalar-surface-warp-field.js";
 import { createPolygonScalarGrid, createScalarGrid, scalarGridIndex } from "../src/lib/scalar-grid.js";
 import { satur } from "../src/lib/saturation.js";
+import {
+  createWorldScreenTransform,
+  screenPointFromWorld,
+  worldPointFromScreen,
+} from "../src/lib/world-screen-transform.js";
 import type { TangentSample } from "../src/render/types.js";
 import type { Point2 } from "../src/lib/polygon-geometry.js";
 
@@ -91,6 +97,32 @@ void test("resolveRegularGridSpec converts samples-per-unit into rectangular inc
     columns: 1201,
     rows: 901,
   });
+});
+
+void test("createInitialGeometry keeps a fixed 24 by 24 world viewBox", () => {
+  const geometry = createInitialGeometry(960, 320, true, true);
+
+  assert.match(geometry.svg, /viewBox="-12\.00 -12\.00 24\.00 24\.00"/);
+});
+
+void test("world-screen transform preserves 1:1 scaling in rectangular renders", () => {
+  const transform = createWorldScreenTransform(640, 480, {
+    minX: -12.0,
+    minY: -12.0,
+    maxX: 12.0,
+    maxY: 12.0,
+  });
+
+  const topLeft = screenPointFromWorld({ x: -12.0, y: 12.0 }, transform);
+  const bottomRight = screenPointFromWorld({ x: 12.0, y: -12.0 }, transform);
+  const center = worldPointFromScreen(320.0, 240.0, transform);
+
+  approximatelyEqual(topLeft.x, 80.0, DEFAULT_EPSILON);
+  approximatelyEqual(topLeft.y, 0.0, DEFAULT_EPSILON);
+  approximatelyEqual(bottomRight.x, 560.0, DEFAULT_EPSILON);
+  approximatelyEqual(bottomRight.y, 480.0, DEFAULT_EPSILON);
+  approximatelyEqual(center.x, 0.0, DEFAULT_EPSILON);
+  approximatelyEqual(center.y, 0.0, DEFAULT_EPSILON);
 });
 
 void test("BicubicGridSampler has matching first derivatives across interior cell boundaries", () => {

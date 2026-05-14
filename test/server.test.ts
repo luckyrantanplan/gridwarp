@@ -4,6 +4,10 @@ import test from "node:test";
 
 import { createInitialGeometry } from "../src/client/initial-geometry.js";
 import { createAppServer } from "../src/server/server.js";
+import type {
+  NoisePreviewResponse,
+  NoisePreviewSchemaResponse,
+} from "../src/shared/noise-preview.js";
 import { WARP_GEOMETRY_FORMAT, type WarpRequest } from "../src/shared/warp-request.js";
 
 void test("html and browser module routes are served from source", async () => {
@@ -18,8 +22,12 @@ void test("html and browser module routes are served from source", async () => {
     const html = await htmlResponse.text();
     const clientModuleResponse = await fetch(`http://127.0.0.1:${String(address.port)}/src/client/index.js`);
     const clientModule = await clientModuleResponse.text();
+    const noiseClientModuleResponse = await fetch(`http://127.0.0.1:${String(address.port)}/src/client/noise-preview.js`);
+    const noiseClientModule = await noiseClientModuleResponse.text();
     const sharedModuleResponse = await fetch(`http://127.0.0.1:${String(address.port)}/src/shared/warp-request.js`);
     const sharedModule = await sharedModuleResponse.text();
+    const noiseSharedModuleResponse = await fetch(`http://127.0.0.1:${String(address.port)}/src/shared/noise-preview.js`);
+    const noiseSharedModule = await noiseSharedModuleResponse.text();
     const missingModuleResponse = await fetch(`http://127.0.0.1:${String(address.port)}/src/client/missing.js`);
     const traversalResponse = await fetch(`http://127.0.0.1:${String(address.port)}/src/%2e%2e/package.js`);
 
@@ -35,13 +43,87 @@ void test("html and browser module routes are served from source", async () => {
     assert.doesNotMatch(clientModule, /type WarpResponse/);
     assert.doesNotMatch(clientModule, /AngleDirectedSurfaceWarpField/);
 
+    assert.equal(noiseClientModuleResponse.status, 200);
+    assert.match(noiseClientModuleResponse.headers.get("content-type") ?? "", /application\/javascript/);
+    assert.match(noiseClientModule, /fetch\("\/api\/noise\/schema"/);
+    assert.match(noiseClientModule, /fetch\("\/api\/noise\/generate"/);
+    assert.doesNotMatch(noiseClientModule, /interface NoisePreviewSchemaResponse/);
+
     assert.equal(sharedModuleResponse.status, 200);
     assert.match(sharedModuleResponse.headers.get("content-type") ?? "", /application\/javascript/);
     assert.match(sharedModule, /export const WARP_GEOMETRY_FORMAT = "svg-polyline-overlay\/v1";/);
     assert.doesNotMatch(sharedModule, /interface WarpRequest/);
 
+    assert.equal(noiseSharedModuleResponse.status, 200);
+    assert.match(noiseSharedModuleResponse.headers.get("content-type") ?? "", /application\/javascript/);
+    assert.match(noiseSharedModule, /export class NoisePreviewRequestError extends Error/);
+    assert.doesNotMatch(noiseSharedModule, /interface NoisePreviewResponse/);
+
     assert.equal(missingModuleResponse.status, 404);
     assert.equal(traversalResponse.status, 404);
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
+  }
+});
+
+void test("noise preview endpoints return schema and server-generated SVG", async () => {
+  const server = createAppServer();
+  await new Promise<void>((resolve) => {
+    server.listen(0, resolve);
+  });
+
+  try {
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
+
+    const schemaResponse = await fetch(`${baseUrl}/api/noise/schema`);
+    const schemaPayload = await schemaResponse.json() as NoisePreviewSchemaResponse;
+
+    const previewResponse = await fetch(`${baseUrl}/api/noise/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        parameters: {
+          ...schemaPayload.defaultParameters,
+          renderWidth: 320,
+          renderHeight: 240,
+          showHeatmap: false,
+          randomSeed: "gridwarp-noise-test",
+        },
+      }),
+    });
+    const previewPayload = await previewResponse.json() as NoisePreviewResponse;
+
+    const invalidPreviewResponse = await fetch(`${baseUrl}/api/noise/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ parameters: null }),
+    });
+    const invalidPreviewMessage = await invalidPreviewResponse.text();
+
+    assert.equal(schemaResponse.status, 200);
+    assert.match(schemaResponse.headers.get("content-type") ?? "", /application\/json/);
+    assert.equal(schemaPayload.defaultParameters.renderWidth, 960);
+    assert.ok(schemaPayload.parameterGroups.length > 0);
+    assert.ok(schemaPayload.parameterDefinitions.length > 0);
+
+    assert.equal(previewResponse.status, 200);
+    assert.match(previewResponse.headers.get("content-type") ?? "", /application\/json/);
+    assert.equal(previewPayload.parameters.renderWidth, 320);
+    assert.equal(previewPayload.parameters.renderHeight, 240);
+    assert.equal(previewPayload.parameters.showHeatmap, false);
+    assert.equal(previewPayload.parameters.randomSeed, "gridwarp-noise-test");
+    assert.match(previewPayload.svg, /^<svg/);
+    assert.match(previewPayload.svg, /width="320"/);
+    assert.match(previewPayload.svg, /height="240"/);
+    assert.match(previewPayload.svg, /Generated displacement field/);
+
+    assert.equal(invalidPreviewResponse.status, 400);
+    assert.match(invalidPreviewMessage, /parameters object/);
   } finally {
     await new Promise<void>((resolve) => {
       server.close(() => {

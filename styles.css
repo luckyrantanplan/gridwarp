@@ -24,7 +24,7 @@ body {
 main {
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto auto minmax(560px, 1fr);
   gap: 16px;
   padding: 18px;
 }
@@ -77,7 +77,8 @@ main {
 }
 
 .source-frame {
-  width: min(100%, 960px);
+  width: min(100%, 680px);
+  aspect-ratio: 1 / 1;
   margin: 0 auto;
   position: relative;
   border: 1px solid rgba(216, 210, 198, 0.9);
@@ -95,17 +96,161 @@ main {
 
 .source-scene {
   width: 100%;
-  height: clamp(220px, 32vh, 320px);
+  height: 100%;
   background:
     linear-gradient(180deg, rgba(246, 244, 239, 0.55), rgba(255, 255, 255, 0.96));
 }
 
 .source-hint {
   margin: 10px auto 0;
-  width: min(100%, 960px);
+  width: min(100%, 680px);
   color: var(--muted);
   font-size: 0.78rem;
   line-height: 1.35;
+}
+
+.noise-panel,
+.noise-preview-panel {
+  padding: 14px 18px 18px;
+  border: 1px solid var(--frame);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.noise-panel-head,
+.noise-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.noise-controls {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.noise-controls .control-group {
+  display: grid;
+  gap: 4px;
+  padding: 14px 14px 4px;
+  border: 1px solid rgba(216, 210, 198, 0.9);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.noise-controls .control-group-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.noise-controls .control-group-description {
+  margin: 0 0 2px;
+  font-size: 0.77rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.noise-controls .control {
+  display: grid;
+  gap: 7px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(216, 210, 198, 0.9);
+}
+
+.noise-controls .control:last-child {
+  border-bottom: none;
+}
+
+.noise-controls .control label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.noise-controls .label-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.noise-controls .tooltip-indicator {
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid rgba(106, 103, 95, 0.35);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: help;
+  flex: 0 0 auto;
+}
+
+.noise-controls .value-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 8px;
+  align-items: center;
+}
+
+.noise-controls input[type="range"] {
+  width: 100%;
+  accent-color: var(--ink);
+}
+
+.noise-controls input[type="number"],
+.noise-controls input[type="text"] {
+  width: 100%;
+  border: 1px solid rgba(216, 210, 198, 0.95);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--ink);
+  padding: 7px 8px;
+  font: inherit;
+}
+
+.noise-controls input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.noise-status {
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.noise-preview-frame {
+  width: min(100%, 960px);
+  min-height: 320px;
+  margin: 0 auto;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(216, 210, 198, 0.9);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(246, 244, 239, 0.82), rgba(255, 255, 255, 0.96));
+}
+
+.noise-preview-frame svg {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .panel {
@@ -240,6 +385,7 @@ p {
 
 .stage {
   position: relative;
+  min-height: clamp(560px, 78vh, 980px);
   border: 1px solid var(--frame);
   border-radius: 18px;
   overflow: hidden;
@@ -347,13 +493,36 @@ svg {
     padding: 12px;
   }
 
+  .noise-panel,
+  .noise-preview-panel {
+    padding: 12px;
+  }
+
   .source-panel-head {
     align-items: start;
     flex-direction: column;
   }
 
+  .noise-panel-head,
+  .noise-preview-head {
+    align-items: start;
+    flex-direction: column;
+  }
+
   .source-scene {
-    height: clamp(180px, 28vh, 240px);
+    height: 100%;
+  }
+
+  .noise-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .noise-preview-frame {
+    min-height: 220px;
+  }
+
+  .stage {
+    min-height: clamp(360px, 58vh, 640px);
   }
 
   .panel {

@@ -10,6 +10,7 @@ import {
 export const OUTER_OCTAGON_RADIUS = 4.0;
 export const INNER_OCTAGON_RADIUS = 2.8;
 export const WORLD_WIDTH = 24.0;
+export const WORLD_HEIGHT = 24.0;
 
 const GRID_LINE_DENSITY_MULTIPLIER = 4;
 const GRID_LINE_SPACING = 1 / GRID_LINE_DENSITY_MULTIPLIER;
@@ -28,7 +29,7 @@ interface WorldBounds {
 }
 
 export function createInitialGeometry(renderWidth: number, renderHeight: number, includeGrid: boolean, includeDiagonals: boolean): WarpGeometry {
-  const worldBounds = createWorldBounds(renderWidth, renderHeight);
+  const worldBounds = createWorldBounds();
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" data-format="${escapeAttribute(WARP_GEOMETRY_FORMAT)}" viewBox="${escapeAttribute(viewBoxValue(worldBounds))}">`,
     renderPolylineGroup(WARP_GEOMETRY_GROUPS.outerBoundary, [closePolyline(regularPolygonVertices(8, OUTER_OCTAGON_RADIUS))], WARP_GEOMETRY_PRESENTATION[WARP_GEOMETRY_GROUPS.outerBoundary]),
@@ -99,15 +100,12 @@ function lineOffsets(minimum: number, maximum: number): number[] {
   return values;
 }
 
-function createWorldBounds(renderWidth: number, renderHeight: number): WorldBounds {
-  const safeRenderWidth = Number.isFinite(renderWidth) && renderWidth > 0 ? renderWidth : 1;
-  const safeRenderHeight = Number.isFinite(renderHeight) && renderHeight > 0 ? renderHeight : 1;
-  const worldHeight = WORLD_WIDTH * safeRenderHeight / safeRenderWidth;
+function createWorldBounds(): WorldBounds {
   return {
     minX: -0.5 * WORLD_WIDTH,
-    minY: -0.5 * worldHeight,
+    minY: -0.5 * WORLD_HEIGHT,
     maxX: 0.5 * WORLD_WIDTH,
-    maxY: 0.5 * worldHeight,
+    maxY: 0.5 * WORLD_HEIGHT,
   };
 }
 
