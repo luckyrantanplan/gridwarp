@@ -42,7 +42,11 @@ export interface ContourTracerSettings {
  * Extracts traced contour components from any scalar field over adaptive leaf cells.
  */
 export class ContourTracer {
-  constructor(private readonly settings: ContourTracerSettings) {}
+  private readonly settings: ContourTracerSettings;
+
+  constructor(settings: ContourTracerSettings) {
+    this.settings = settings;
+  }
 
   /**
    * Traces every connected component of the zero level set of `field` over `leafCells`.

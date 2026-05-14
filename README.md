@@ -53,21 +53,20 @@ The UI currently exposes:
 index.html                        demo page shell
 src/
   client/
+    initial-geometry.ts          initial octagon, grid, and diagonal geometry serialization
     index.ts                      browser UI state, fetch, and viewport wiring
-  demo/
+    transfer-curve.ts             browser-side transfer-curve plotting helpers
+  render/
     contour-tracer.ts             contour tracing over scalar fields
     leaf-cell-collector.ts        adaptive viewport subdivision
-    octagon-overlay.ts            warped octagon overlay rendering
     point-bucket-index.ts         seed/sample deduplication buckets
     polyline-overlay.ts           polygon helper geometry for overlays
     svg-contour-renderer.ts       SVG path serialization
-    types.ts                      shared demo types
-    visible-warp-bounds.ts        visible-domain sampling helpers
+    types.ts                      shared render types
     warp-scalar-fields.ts         scalar-field adapters around the warp
   lib/
     bicubic-grid-sampler.ts       shared Catmull-Rom regular-grid sampler
     direction-grid.ts             sampled unit-complex direction field
-    octagon-constants.ts          shared octagon radii
     polygon-geometry.ts           geometry primitives
     polygon-shape.ts              polygon distance and bounds queries
     regular-grid.ts               regular-grid storage and indexing
@@ -89,12 +88,14 @@ test/
 
 The current render path is:
 
-1. Build a polygon-bounded scalar amplitude grid in [src/lib/scalar-grid.ts](src/lib/scalar-grid.ts).
-2. Build a direction grid of unit-complex components in [src/lib/direction-grid.ts](src/lib/direction-grid.ts).
-3. Bicubically sample both grids through [src/lib/bicubic-grid-sampler.ts](src/lib/bicubic-grid-sampler.ts).
-4. Compose amplitude and direction into a warp in [src/lib/scalar-surface-warp-field.ts](src/lib/scalar-surface-warp-field.ts).
-5. Trace contours with [src/demo/contour-tracer.ts](src/demo/contour-tracer.ts) and render them to SVG with [src/demo/svg-contour-renderer.ts](src/demo/svg-contour-renderer.ts).
-6. Return the final SVG through [src/server/render-warp-scene.ts](src/server/render-warp-scene.ts) and replace the browser scene through [src/client/index.ts](src/client/index.ts).
+1. Build the initial outer octagon, inner octagon, grid families, and diagonals in the browser through [src/client/initial-geometry.ts](src/client/initial-geometry.ts).
+2. Send that geometry SVG plus scalar parameters to `/api/warp` from [src/client/index.ts](src/client/index.ts).
+3. Parse and normalize the restricted SVG geometry on the server in [src/server/parse-geometry-svg.ts](src/server/parse-geometry-svg.ts).
+4. Build a polygon-bounded scalar amplitude grid in [src/lib/scalar-grid.ts](src/lib/scalar-grid.ts).
+5. Build a direction grid of unit-complex components in [src/lib/direction-grid.ts](src/lib/direction-grid.ts).
+6. Bicubically sample both grids through [src/lib/bicubic-grid-sampler.ts](src/lib/bicubic-grid-sampler.ts).
+7. Compose amplitude and direction into a warp in [src/lib/scalar-surface-warp-field.ts](src/lib/scalar-surface-warp-field.ts).
+8. Trace arbitrary client-supplied polylines with [src/render/polyline-overlay.ts](src/render/polyline-overlay.ts), render the warped scene in [src/server/render-warp-scene.ts](src/server/render-warp-scene.ts), and replace the browser scene through [src/client/index.ts](src/client/index.ts).
 
 ## Deployment
 

@@ -4,9 +4,10 @@ import {
   transferCurvePathData,
   type PlotBounds,
   type PlotFrame,
-} from "../demo/transfer-curve.js";
+} from "./transfer-curve.js";
+import { createInitialGeometry } from "./initial-geometry.js";
 import { satur } from "../lib/saturation.js";
-import { OCTAGON_DEMO_SHAPE, type WarpRequest, type WarpResponse } from "../shared/warp-request.js";
+import type { WarpRequest, WarpResponse } from "../shared/warp-request.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SCALAR_CONTROL_DECIMALS = 2;
@@ -373,15 +374,13 @@ async function requestScene(): Promise<void> {
   applySceneViewBox();
 
   const requestPayload: WarpRequest = {
-    geometry: { shape: OCTAGON_DEMO_SHAPE },
+    geometry: createInitialGeometry(width, height, gridEnabled.checked, diagonalsEnabled.checked),
     renderWidth: width,
     renderHeight: height,
     time: currentTime,
     sampleGridSize: currentSampleGridSize,
     gain: currentGain,
     plateau: currentPlateau,
-    gridVisible: gridEnabled.checked,
-    diagonalsVisible: diagonalsEnabled.checked,
   };
 
   activeRequestId += 1;

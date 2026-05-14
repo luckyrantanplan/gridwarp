@@ -1,22 +1,16 @@
-import { ContourTracer, type ContourTracerSettings } from "../demo/contour-tracer.js";
-import { LeafCellCollector, smallestLeafCellSize, type LeafCellCollectorSettings } from "../demo/leaf-cell-collector.js";
-import { type OctagonOverlaySettings, traceWarpedOctagonOverlayGroups } from "../demo/octagon-overlay.js";
-import { regularPolygonVertices } from "../demo/polyline-overlay.js";
-import { SvgContourRenderer } from "../demo/svg-contour-renderer.js";
-import type { Cell, Point, TracedComponent, WarpField } from "../demo/types.js";
-import { maxWarpedRadius } from "../demo/visible-warp-bounds.js";
-import { WarpLinearField } from "../demo/warp-scalar-fields.js";
+import { ContourTracer, type ContourTracerSettings } from "../render/contour-tracer.js";
+import { LeafCellCollector, smallestLeafCellSize, type LeafCellCollectorSettings } from "../render/leaf-cell-collector.js";
+import { segmentsFromVertices, traceWarpedPolylineOverlayGroups, type WarpedPolylineShape } from "../render/polyline-overlay.js";
+import { SvgContourRenderer } from "../render/svg-contour-renderer.js";
+import type { Cell, Point, TracedComponent, WarpField } from "../render/types.js";
 import { BicubicGridSampler } from "../lib/bicubic-grid-sampler.js";
 import { createDirectionGrid } from "../lib/direction-grid.js";
-import { INNER_OCTAGON_RADIUS, OUTER_OCTAGON_RADIUS } from "../lib/octagon-constants.js";
 import { PolygonShape } from "../lib/polygon-shape.js";
 import { AngleDirectedSurfaceWarpField } from "../lib/scalar-surface-warp-field.js";
 import { countNonZeroSamples, createPolygonScalarGrid } from "../lib/scalar-grid.js";
 import type { WarpRequest } from "../shared/warp-request.js";
+import type { ParsedWarpGeometry } from "./parse-geometry-svg.js";
 
-const GRID_LINE_DENSITY_MULTIPLIER = 4;
-const GRID_LINE_SPACING = 1 / GRID_LINE_DENSITY_MULTIPLIER;
-const GRID_LINE_OFFSET = 0.5 * GRID_LINE_SPACING;
 const POLYGON_SCALAR_GRID_PADDING = 0.5;
 const SURFACE_WARP_JACOBIAN_EPSILON = 0.75;
 const SURFACE_WARP_REFERENCE_TIME = 16.0;
@@ -25,13 +19,9 @@ const SURFACE_WARP_ANGLE_OFFSET = 22.0 * Math.PI / 180.0;
 const STROKE_WIDTH = 2.2;
 const PATH_DECIMALS = 2;
 
-const octagonOverlaySettings: OctagonOverlaySettings = {
-  outerRadius: OUTER_OCTAGON_RADIUS,
-  innerRadius: INNER_OCTAGON_RADIUS,
-  stroke: "#161616",
-  strokeWidth: 1.6,
-  diagonalOpacity: 0.55,
-};
+const OVERLAY_STROKE = "#161616";
+const OVERLAY_STROKE_WIDTH = 1.6;
+const DIAGONAL_OPACITY = 0.55;
 
 const leafCellSettings: LeafCellCollectorSettings = {
   maxContourCellSize: 8,
@@ -60,10 +50,10 @@ const tracerSettings: ContourTracerSettings = {
 
 const contourTracer = new ContourTracer(tracerSettings);
 const contourRenderer = new SvgContourRenderer(STROKE_WIDTH, PATH_DECIMALS);
-const outerOctagonShape = new PolygonShape(regularPolygonVertices(8, OUTER_OCTAGON_RADIUS));
 
-export function renderWarpScene(request: WarpRequest): string {
-  const scalarGrid = createPolygonScalarGrid(outerOctagonShape, {
+export function renderWarpScene(request: WarpRequest, geometry: ParsedWarpGeometry): string {
+  const outerBoundaryShape = new PolygonShape(geometry.outerBoundary);
+  const scalarGrid = createPolygonScalarGrid(outerBoundaryShape, {
     columns: request.sampleGridSize,
     rows: request.sampleGridSize,
     padding: POLYGON_SCALAR_GRID_PADDING,
@@ -80,7 +70,7 @@ export function renderWarpScene(request: WarpRequest): string {
   const warp = new AngleDirectedSurfaceWarpField(
     request.renderWidth,
     request.renderHeight,
-    outerOctagonShape,
+    outerBoundaryShape,
     amplitudeSurface,
     directionSurface,
     {
@@ -96,36 +86,19 @@ export function renderWarpScene(request: WarpRequest): string {
   ).collect();
 
   const parts: string[] = [];
-  let offsetCount = "0";
-  if (request.gridVisible) {
-    const limit = maxWarpedRadius(request.renderWidth, request.renderHeight, warp);
-    const offsets = lineOffsets(limit);
-    parts.push(renderContourFamilyMarkup(offsets, { x: 0, y: 1 }, "#d4372f", leafCells, warp));
-    parts.push(renderContourFamilyMarkup(offsets, { x: 1, y: 0 }, "#148a45", leafCells, warp));
-    offsetCount = String(offsets.length);
-  }
-
-  const overlaySettings: OctagonOverlaySettings = {
-    ...octagonOverlaySettings,
-    showDiagonals: request.diagonalsVisible,
-  };
-  for (const group of traceWarpedOctagonOverlayGroups(warp, leafCells, contourTracer, overlaySettings)) {
-    parts.push(
-      renderOverlayGroupMarkup(
-        group.components,
-        octagonOverlaySettings.stroke,
-        octagonOverlaySettings.strokeWidth,
-        group.opacity,
-      ),
-    );
-  }
+  parts.push(renderWarpedShapeSetMarkup(geometry.horizontalGrid, "#d4372f", STROKE_WIDTH, warp, leafCells));
+  parts.push(renderWarpedShapeSetMarkup(geometry.verticalGrid, "#148a45", STROKE_WIDTH, warp, leafCells));
+  parts.push(renderWarpedShapeSetMarkup([toClosedShape(geometry.outerBoundary)], OVERLAY_STROKE, OVERLAY_STROKE_WIDTH, warp, leafCells));
+  parts.push(renderWarpedShapeSetMarkup(geometry.innerBoundary, OVERLAY_STROKE, OVERLAY_STROKE_WIDTH, warp, leafCells));
+  parts.push(renderWarpedShapeSetMarkup(geometry.diagonals, OVERLAY_STROKE, OVERLAY_STROKE_WIDTH, warp, leafCells, DIAGONAL_OPACITY));
 
   const activeSampleCount = String(countNonZeroSamples(scalarGrid));
   const leafCellCount = String(leafCells.length);
   const smallestCell = smallestLeafCellSize(leafCells, leafCellSettings.maxContourCellSize).toFixed(1);
+  const gridLabel = formatGridLabel(geometry.horizontalGrid.length, geometry.verticalGrid.length);
   const caption = request.renderWidth < 720
-    ? compactCaption(request.time, request.sampleGridSize, activeSampleCount, offsetCount, leafCellCount, smallestCell, request.gridVisible)
-    : fullCaption(request.time, request.sampleGridSize, activeSampleCount, offsetCount, leafCellCount, smallestCell, request.gridVisible);
+    ? compactCaption(request.time, request.sampleGridSize, activeSampleCount, gridLabel, leafCellCount, smallestCell)
+    : fullCaption(request.time, request.sampleGridSize, activeSampleCount, gridLabel, leafCellCount, smallestCell);
 
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${escapeAttribute(String(request.renderWidth))}" height="${escapeAttribute(String(request.renderHeight))}" viewBox="0 0 ${escapeAttribute(String(request.renderWidth))} ${escapeAttribute(String(request.renderHeight))}" aria-label="Scalar warp grid demo" data-caption="${escapeAttribute(caption)}">`,
@@ -134,32 +107,23 @@ export function renderWarpScene(request: WarpRequest): string {
   ].join("");
 }
 
-function lineOffsets(limit: number): number[] {
-  const values: number[] = [];
-  const start = Math.floor(-limit);
-  const end = Math.ceil(limit);
-  for (let value = start; value <= end; value += GRID_LINE_SPACING) {
-    values.push(value + GRID_LINE_OFFSET);
-  }
-  return values;
-}
-
-function renderContourFamilyMarkup(
-  offsets: readonly number[],
-  normal: Point,
+function renderWarpedShapeSetMarkup(
+  shapes: readonly WarpedPolylineShape[],
   stroke: string,
-  leafCells: readonly Cell[],
+  strokeWidth: number,
   warp: WarpField,
+  leafCells: readonly Cell[],
+  opacity?: number,
 ): string {
-  const parts: string[] = ["<g fill=\"none\">"];
-  for (const offset of offsets) {
-    const field = new WarpLinearField(warp, normal, offset);
-    const components = contourTracer.trace(field, leafCells);
-    for (const component of components) {
-      parts.push(renderPathMarkup(component, stroke, STROKE_WIDTH, "round", "round", "non-scaling-stroke"));
-    }
+  if (shapes.length === 0) {
+    return "";
   }
-  parts.push("</g>");
+
+  const tracedGroups = traceWarpedPolylineOverlayGroups(warp, leafCells, contourTracer, shapes);
+  const parts: string[] = [];
+  for (const group of tracedGroups) {
+    parts.push(renderOverlayGroupMarkup(group.components, stroke, strokeWidth, opacity ?? group.opacity));
+  }
   return parts.join("");
 }
 
@@ -204,12 +168,10 @@ function compactCaption(
   time: number,
   sampleGridSize: number,
   activeSampleCount: string,
-  offsetCount: string,
+  gridLabel: string,
   leafCellCount: string,
   smallestCell: string,
-  gridIsEnabled: boolean,
 ): string {
-  const gridLabel = gridIsEnabled ? `${offsetCount}/axis` : "grid off";
   const sampleGridLabel = `${String(sampleGridSize)}x${String(sampleGridSize)}`;
   return `t=${time.toFixed(1)} · ${sampleGridLabel} · ${activeSampleCount} active · ${gridLabel} · ${leafCellCount} cells · min ${smallestCell}px`;
 }
@@ -218,14 +180,29 @@ function fullCaption(
   time: number,
   sampleGridSize: number,
   activeSampleCount: string,
-  offsetCount: string,
+  gridLabel: string,
   leafCellCount: string,
   smallestCell: string,
-  gridIsEnabled: boolean,
 ): string {
-  const gridLabel = gridIsEnabled ? `${offsetCount} lines per axis` : "grid tracing disabled";
   const sampleGridLabel = `${String(sampleGridSize)}x${String(sampleGridSize)} sample grid`;
   return `C1 scalar-amplitude warp at t=${time.toFixed(1)} · ${sampleGridLabel} · ${activeSampleCount} active samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
+}
+
+function formatGridLabel(horizontalCount: number, verticalCount: number): string {
+  if (horizontalCount === 0 && verticalCount === 0) {
+    return "grid off";
+  }
+  if (horizontalCount === verticalCount) {
+    return `${String(horizontalCount)} lines per axis`;
+  }
+  return `${String(horizontalCount)}/${String(verticalCount)} lines`;
+}
+
+function toClosedShape(points: readonly Point[]): WarpedPolylineShape {
+  return {
+    segments: segmentsFromVertices(points, true),
+    closed: true,
+  };
 }
 
 function escapeAttribute(value: string): string {

@@ -4,8 +4,9 @@ import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { parseGeometrySvg } from "./parse-geometry-svg.js";
 import { renderWarpScene } from "./render-warp-scene.js";
-import { parseWarpRequest, type WarpResponse } from "../shared/warp-request.js";
+import { parseWarpRequest, WarpRequestError, type WarpResponse } from "../shared/warp-request.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDirectory = path.dirname(currentFile);
@@ -72,11 +73,11 @@ async function handleWarpRoute(request: IncomingMessage, response: ServerRespons
   try {
     const body = await readRequestBody(request);
     const warpRequest = parseWarpRequest(body);
-    const payload: WarpResponse = { svg: renderWarpScene(warpRequest) };
+    const payload: WarpResponse = { svg: renderWarpScene(warpRequest, parseGeometrySvg(warpRequest.geometry)) };
     sendJson(response, 200, payload);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown warp error";
-    const status = isBadRequestError(message) ? 400 : 500;
+    const status = error instanceof WarpRequestError ? 400 : 500;
     sendText(response, status, message);
   }
 }
@@ -165,7 +166,7 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
     const buffer = toBuffer(chunk);
     totalBytes += buffer.length;
     if (totalBytes > 1024 * 1024) {
-      throw new Error("Request body must be 1 MiB or smaller.");
+      throw new WarpRequestError("Request body must be 1 MiB or smaller.");
     }
     chunks.push(buffer);
   }
@@ -180,7 +181,7 @@ function toBuffer(chunk: unknown): Buffer {
   if (chunk instanceof Uint8Array) {
     return Buffer.from(chunk);
   }
-  throw new Error("Request body must contain text data.");
+  throw new WarpRequestError("Request body must contain text data.");
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: WarpResponse): void {
@@ -224,10 +225,6 @@ function mimeTypeForPath(filePath: string): string {
     default:
       return "application/octet-stream";
   }
-}
-
-function isBadRequestError(message: string): boolean {
-  return message.includes("must") || message.includes("Request body") || message.includes("geometry");
 }
 
 function isMainModule(): boolean {

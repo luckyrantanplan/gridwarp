@@ -8,8 +8,11 @@ import type { Point } from "./types.js";
  */
 export class PointBucketIndex {
   private readonly buckets = new Map<string, Point[]>();
+  private readonly bucketSize: number;
 
-  constructor(private readonly bucketSize: number) {}
+  constructor(bucketSize: number) {
+    this.bucketSize = bucketSize;
+  }
 
   hasNearby(point: Point, maxDistance: number): boolean {
     const bucket = this.baseBucket(point);

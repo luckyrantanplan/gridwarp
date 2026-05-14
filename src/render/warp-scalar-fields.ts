@@ -19,12 +19,18 @@ import type { Point, ScalarField, ScreenNode, WarpField } from "./types.js";
 export class WarpLinearField implements ScalarField {
   readonly width: number;
   readonly height: number;
+  private readonly warp: WarpField;
+  private readonly normal: Point;
+  private readonly offset: number;
 
   constructor(
-    private readonly warp: WarpField,
-    private readonly normal: Point,
-    private readonly offset: number,
+    warp: WarpField,
+    normal: Point,
+    offset: number,
   ) {
+    this.warp = warp;
+    this.normal = normal;
+    this.offset = offset;
     const bounds = warp.bounds();
     this.width = bounds.width;
     this.height = bounds.height;

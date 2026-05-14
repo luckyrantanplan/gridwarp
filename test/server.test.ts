@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
+import { createInitialGeometry } from "../src/client/initial-geometry.js";
 import { createAppServer } from "../src/server/server.js";
-import { OCTAGON_DEMO_SHAPE, type WarpRequest } from "../src/shared/warp-request.js";
+import { WARP_GEOMETRY_FORMAT, type WarpRequest } from "../src/shared/warp-request.js";
 
 void test("html and browser module routes are served from source", async () => {
   const server = createAppServer();
@@ -36,7 +37,7 @@ void test("html and browser module routes are served from source", async () => {
 
     assert.equal(sharedModuleResponse.status, 200);
     assert.match(sharedModuleResponse.headers.get("content-type") ?? "", /application\/javascript/);
-    assert.match(sharedModule, /export const OCTAGON_DEMO_SHAPE = "octagon-demo";/);
+    assert.match(sharedModule, /export const WARP_GEOMETRY_FORMAT = "svg-polyline-overlay\/v1";/);
     assert.doesNotMatch(sharedModule, /interface WarpRequest/);
 
     assert.equal(missingModuleResponse.status, 404);
@@ -60,15 +61,13 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     const address = server.address() as AddressInfo;
     const baseUrl = `http://127.0.0.1:${String(address.port)}`;
     const requestBody: WarpRequest = {
-      geometry: { shape: OCTAGON_DEMO_SHAPE },
+      geometry: createInitialGeometry(640, 480, true, true),
       renderWidth: 640,
       renderHeight: 480,
       time: 16,
       sampleGridSize: 64,
       gain: 0.75,
       plateau: 0.75,
-      gridVisible: true,
-      diagonalsVisible: true,
     };
 
     const response = await fetch(`${baseUrl}/api/warp`, {
@@ -83,7 +82,7 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...requestBody,
-        gridVisible: false,
+        geometry: createInitialGeometry(640, 480, false, true),
       }),
     });
     const noGridPayload = await noGridResponse.json() as { svg: string };
@@ -93,7 +92,7 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...requestBody,
-        diagonalsVisible: false,
+        geometry: createInitialGeometry(640, 480, true, false),
       }),
     });
     const noDiagonalPayload = await noDiagonalResponse.json() as { svg: string };
@@ -103,7 +102,10 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...requestBody,
-        geometry: { shape: "bad-shape" },
+        geometry: {
+          format: WARP_GEOMETRY_FORMAT,
+          svg: "<svg><g id=\"outer-boundary\"><polyline points=\"0,0 1,0 1,1\" /></g></svg>",
+        },
       }),
     });
     const invalidGeometryMessage = await invalidGeometryResponse.text();
@@ -120,7 +122,7 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     assert.equal(noGridResponse.status, 200);
     assert.equal(noDiagonalResponse.status, 200);
     assert.equal(invalidGeometryResponse.status, 400);
-    assert.match(invalidGeometryMessage, /geometry\.shape must be octagon-demo/);
+    assert.match(invalidGeometryMessage, /inner-boundary group is required/);
   } finally {
     await new Promise<void>((resolve) => {
       server.close(() => {

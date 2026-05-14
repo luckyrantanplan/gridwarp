@@ -637,8 +637,10 @@ class EndpointSolver {
   private readonly height: number;
   private readonly planeScale: number;
   private readonly cache = new Map<string, Point | null>();
+  private readonly warp: WarpField;
 
-  constructor(private readonly warp: WarpField) {
+  constructor(warp: WarpField) {
+    this.warp = warp;
     const bounds = warp.bounds();
     this.width = bounds.width;
     this.height = bounds.height;

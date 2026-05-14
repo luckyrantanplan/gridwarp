@@ -1,5 +1,5 @@
 /**
- * Shared contour-tracing types used by the demo-side pipeline.
+ * Shared contour-tracing types used by the render pipeline.
  */
 import type { WarpValue } from "../lib/warp-field.js";
 

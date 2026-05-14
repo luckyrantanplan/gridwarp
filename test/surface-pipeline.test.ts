@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BicubicGridSampler } from "../src/lib/bicubic-grid-sampler.js";
-import { mapPlotPoint, sampleTransferCurve, transferCurvePathData } from "../src/demo/transfer-curve.js";
+import { mapPlotPoint, sampleTransferCurve, transferCurvePathData } from "../src/client/transfer-curve.js";
 import { createDirectionGrid } from "../src/lib/direction-grid.js";
 import { PolygonShape } from "../src/lib/polygon-shape.js";
 import { AngleDirectedSurfaceWarpField } from "../src/lib/scalar-surface-warp-field.js";
