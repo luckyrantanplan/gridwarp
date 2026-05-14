@@ -3,11 +3,9 @@
  * and closed polygon rings.
  */
 import type { ContourTracer } from "./contour-tracer.js";
-import type { SvgContourRenderer } from "./svg-contour-renderer.js";
 import type { Cell, Point, TangentSample, TracedComponent, WarpField } from "./types.js";
 import { WarpLinearField } from "./warp-scalar-fields.js";
 
-const SVG_NS = "http://www.w3.org/2000/svg";
 const SEGMENT_RANGE_EPSILON = 1e-6;
 const MAX_ENDPOINT_SNAP_DISTANCE = 24;
 const MAX_RING_JOIN_DISTANCE = 40;
@@ -19,11 +17,6 @@ const ENDPOINT_SOLVER_ITERATIONS = 60;
 export interface PlaneSegment {
   readonly start: Point;
   readonly end: Point;
-}
-
-export interface WarpedPolylineOverlaySettings {
-  readonly stroke: string;
-  readonly strokeWidth: number;
 }
 
 export interface WarpedPolylineShape {
@@ -41,9 +34,6 @@ interface OverlayRenderContext {
   readonly warp: WarpField;
   readonly leafCells: readonly Cell[];
   readonly tracer: ContourTracer;
-  readonly renderer: SvgContourRenderer | null;
-  readonly stroke: string;
-  readonly strokeWidth: number;
   readonly endpointSolver: EndpointSolver;
 }
 
@@ -91,32 +81,6 @@ interface SegmentImage extends TracedComponent {
   readonly clippedAtSegmentEnd: boolean;
 }
 
-export function createWarpedPolylineOverlay(
-  warp: WarpField,
-  leafCells: readonly Cell[],
-  tracer: ContourTracer,
-  renderer: SvgContourRenderer,
-  shapes: readonly WarpedPolylineShape[],
-  settings: WarpedPolylineOverlaySettings,
-): SVGGElement {
-  const group = createOverlayGroup(settings.stroke, settings.strokeWidth);
-  const context: OverlayRenderContext = {
-    warp,
-    leafCells,
-    tracer,
-    renderer,
-    stroke: settings.stroke,
-    strokeWidth: settings.strokeWidth,
-    endpointSolver: new EndpointSolver(warp),
-  };
-
-  for (const shape of shapes) {
-    appendShape(group, shape, context);
-  }
-
-  return group;
-}
-
 export function traceWarpedPolylineOverlayGroups(
   warp: WarpField,
   leafCells: readonly Cell[],
@@ -127,9 +91,6 @@ export function traceWarpedPolylineOverlayGroups(
     warp,
     leafCells,
     tracer,
-    renderer: null,
-    stroke: "",
-    strokeWidth: 0,
     endpointSolver: new EndpointSolver(warp),
   };
   const groups: TracedOverlayGroup[] = [];
@@ -142,25 +103,6 @@ export function traceWarpedPolylineOverlayGroups(
   }
 
   return groups;
-}
-
-function appendShape(
-  parent: SVGGElement,
-  shape: WarpedPolylineShape,
-  context: OverlayRenderContext,
-): void {
-  const tracedGroup = traceShapeGroup(shape, context);
-  if (tracedGroup === null || context.renderer === null) return;
-
-  const target = tracedGroup.opacity === undefined
-    ? parent
-    : createOverlayGroup(context.stroke, context.strokeWidth);
-  if (tracedGroup.opacity !== undefined) {
-    target.setAttribute("opacity", String(tracedGroup.opacity));
-  }
-
-  appendComponents(target, tracedGroup.components, context.renderer, context.stroke);
-  if (target !== parent) parent.appendChild(target);
 }
 
 function traceShapeGroup(
@@ -176,28 +118,6 @@ function traceShapeGroup(
   return shape.opacity === undefined
     ? { components }
     : { components, opacity: shape.opacity };
-}
-
-function createOverlayGroup(stroke: string, strokeWidth: number): SVGGElement {
-  const group = document.createElementNS(SVG_NS, "g");
-  group.setAttribute("fill", "none");
-  group.setAttribute("stroke", stroke);
-  group.setAttribute("stroke-width", String(strokeWidth));
-  group.setAttribute("stroke-linecap", "butt");
-  group.setAttribute("stroke-linejoin", "miter");
-  group.setAttribute("vector-effect", "non-scaling-stroke");
-  return group;
-}
-
-function appendComponents(
-  parent: SVGGElement,
-  components: readonly TracedComponent[],
-  renderer: SvgContourRenderer,
-  stroke: string,
-): void {
-  for (const component of components) {
-    parent.appendChild(createOverlayPathElement(renderer, component, stroke));
-  }
 }
 
 function traceSegmentImages(
@@ -430,13 +350,6 @@ function orientRunByParameter(run: ClipRun, warp: WarpField, direction: Point, i
     clippedAtStart: run.clippedAtEnd,
     clippedAtEnd: run.clippedAtStart,
   };
-}
-
-function createOverlayPathElement(renderer: SvgContourRenderer, component: TracedComponent, stroke: string): SVGPathElement {
-  const path = renderer.createPathElement(component, stroke);
-  path.setAttribute("stroke-linecap", "butt");
-  path.setAttribute("stroke-linejoin", component.closed ? "miter" : "bevel");
-  return path;
 }
 
 function chooseSnapPoint(sample: TangentSample, endpoint: Point | null): Point | null {

@@ -12,7 +12,6 @@
     "start": "tsx src/server/server.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "export:video": "node ./scripts/export-video.mjs",
     "test": "node --import tsx --test test/**/*.test.ts",
     "coverage": "node --import tsx --test --experimental-test-coverage test/**/*.test.ts"
   },
@@ -24,7 +23,6 @@
     "@types/node": "^25.6.0",
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
-    "playwright": "^1.54.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.0"

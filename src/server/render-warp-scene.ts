@@ -265,10 +265,11 @@ function withOpacity(presentation: WarpGeometryPresentation, opacity: number | u
     strokeLineJoin: presentation.strokeLineJoin,
     vectorEffect: presentation.vectorEffect,
   };
-  if (opacity !== undefined) {
+  const effectiveOpacity = opacity ?? presentation.opacity;
+  if (effectiveOpacity !== undefined) {
     return {
       ...nextPresentation,
-      opacity,
+      opacity: effectiveOpacity,
     };
   }
   return nextPresentation;
