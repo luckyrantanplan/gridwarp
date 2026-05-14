@@ -50,7 +50,6 @@ The UI currently exposes:
 ## Project Structure
 
 ```text
-index.ts                          re-exports the app server entrypoint
 index.html                        demo page shell
 src/
   client/
