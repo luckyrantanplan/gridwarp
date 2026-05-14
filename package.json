@@ -4,14 +4,17 @@
   "description": "Scalar-warp grid demo with bicubic interpolation",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && npm run lint",
+    "start": "tsx src/server/server.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "serve": "tsx ./index.ts",
     "export:video": "node ./scripts/export-video.mjs",
-    "test": "tsx --test test/**/*.test.ts",
-    "test:coverage": "tsx --test --experimental-test-coverage test/**/*.test.ts"
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "coverage": "node --import tsx --test --experimental-test-coverage test/**/*.test.ts"
   },
   "keywords": [],
   "author": "",

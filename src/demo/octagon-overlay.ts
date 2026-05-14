@@ -4,9 +4,11 @@
 import type { ContourTracer } from "./contour-tracer.js";
 import {
   createWarpedPolylineOverlay,
+  traceWarpedPolylineOverlayGroups,
   type PlaneSegment,
   regularPolygonVertices,
   segmentsFromVertices,
+  type TracedOverlayGroup,
   type WarpedPolylineOverlaySettings,
   type WarpedPolylineShape,
 } from "./polyline-overlay.js";
@@ -31,6 +33,15 @@ export function createWarpedOctagonOverlay(
   settings: OctagonOverlaySettings,
 ): SVGGElement {
   return createWarpedPolylineOverlay(warp, leafCells, tracer, renderer, octagonShapes(settings), settings);
+}
+
+export function traceWarpedOctagonOverlayGroups(
+  warp: WarpField,
+  leafCells: readonly Cell[],
+  tracer: ContourTracer,
+  settings: OctagonOverlaySettings,
+): TracedOverlayGroup[] {
+  return traceWarpedPolylineOverlayGroups(warp, leafCells, tracer, octagonShapes(settings));
 }
 
 function octagonShapes(settings: OctagonOverlaySettings): WarpedPolylineShape[] {

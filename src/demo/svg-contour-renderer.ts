@@ -14,6 +14,10 @@ export class SvgContourRenderer {
     private readonly pathDecimals: number,
   ) {}
 
+  createPathData(component: TracedComponent): string {
+    return this.buildPathData(component);
+  }
+
   createPathElement(component: TracedComponent, stroke: string): SVGPathElement {
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("fill", "none");
@@ -23,11 +27,11 @@ export class SvgContourRenderer {
     path.setAttribute("stroke-linejoin", "round");
     path.setAttribute("vector-effect", "non-scaling-stroke");
     path.dataset.closed = String(component.closed);
-    path.setAttribute("d", this.createPathData(component));
+    path.setAttribute("d", this.buildPathData(component));
     return path;
   }
 
-  private createPathData(component: TracedComponent): string {
+  private buildPathData(component: TracedComponent): string {
     const samples = this.preparePathSamples(component);
     if (samples.length < 2) return "";
 

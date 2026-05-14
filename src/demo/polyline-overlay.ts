@@ -32,11 +32,16 @@ export interface WarpedPolylineShape {
   readonly opacity?: number;
 }
 
+export interface TracedOverlayGroup {
+  readonly components: readonly TracedComponent[];
+  readonly opacity?: number;
+}
+
 interface OverlayRenderContext {
   readonly warp: WarpField;
   readonly leafCells: readonly Cell[];
   readonly tracer: ContourTracer;
-  readonly renderer: SvgContourRenderer;
+  readonly renderer: SvgContourRenderer | null;
   readonly stroke: string;
   readonly strokeWidth: number;
   readonly endpointSolver: EndpointSolver;
@@ -112,24 +117,65 @@ export function createWarpedPolylineOverlay(
   return group;
 }
 
+export function traceWarpedPolylineOverlayGroups(
+  warp: WarpField,
+  leafCells: readonly Cell[],
+  tracer: ContourTracer,
+  shapes: readonly WarpedPolylineShape[],
+): TracedOverlayGroup[] {
+  const context: OverlayRenderContext = {
+    warp,
+    leafCells,
+    tracer,
+    renderer: null,
+    stroke: "",
+    strokeWidth: 0,
+    endpointSolver: new EndpointSolver(warp),
+  };
+  const groups: TracedOverlayGroup[] = [];
+
+  for (const shape of shapes) {
+    const tracedGroup = traceShapeGroup(shape, context);
+    if (tracedGroup !== null) {
+      groups.push(tracedGroup);
+    }
+  }
+
+  return groups;
+}
+
 function appendShape(
   parent: SVGGElement,
   shape: WarpedPolylineShape,
   context: OverlayRenderContext,
 ): void {
-  const segmentImages = shape.segments.map((segment) => traceSegmentImages(segment, context));
-  const components = shape.closed ? mergeSegmentLoopImages(segmentImages) : segmentImages.flat();
-  if (components.length === 0) return;
+  const tracedGroup = traceShapeGroup(shape, context);
+  if (tracedGroup === null || context.renderer === null) return;
 
-  const target = shape.opacity === undefined
+  const target = tracedGroup.opacity === undefined
     ? parent
     : createOverlayGroup(context.stroke, context.strokeWidth);
-  if (shape.opacity !== undefined) {
-    target.setAttribute("opacity", String(shape.opacity));
+  if (tracedGroup.opacity !== undefined) {
+    target.setAttribute("opacity", String(tracedGroup.opacity));
   }
 
-  appendComponents(target, components, context.renderer, context.stroke);
+  appendComponents(target, tracedGroup.components, context.renderer, context.stroke);
   if (target !== parent) parent.appendChild(target);
+}
+
+function traceShapeGroup(
+  shape: WarpedPolylineShape,
+  context: OverlayRenderContext,
+): TracedOverlayGroup | null {
+  const segmentImages = shape.segments.map((segment) => traceSegmentImages(segment, context));
+  const components = shape.closed ? mergeSegmentLoopImages(segmentImages) : segmentImages.flat();
+  if (components.length === 0) {
+    return null;
+  }
+
+  return shape.opacity === undefined
+    ? { components }
+    : { components, opacity: shape.opacity };
 }
 
 function createOverlayGroup(stroke: string, strokeWidth: number): SVGGElement {
