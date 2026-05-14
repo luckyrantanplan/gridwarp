@@ -15,6 +15,8 @@ const VIEWPORT_MIN_SCALE = 0.15;
 const VIEWPORT_MAX_SCALE = 6.0;
 const VIEWPORT_MARGIN_FACTOR = 0.75;
 const TRANSFER_PLOT_SAMPLE_COUNT = 48;
+const TRANSFER_PLOT_LABEL_MARGIN = 8;
+const TRANSFER_PLOT_RIGHT_LABEL_THRESHOLD = 44;
 const TRANSFER_PLOT_FRAME: PlotFrame = {
   width: 180,
   height: 120,
@@ -44,13 +46,14 @@ interface PanState {
 }
 
 const scene = getRequiredElement("scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
+const sourceScene = getRequiredElement("source-scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const caption = getRequiredElement("caption", (element): element is HTMLDivElement => element instanceof HTMLDivElement);
 const timeSlider = getRequiredElement("time-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeInput = getRequiredElement("time-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const timeValue = getRequiredElement("time-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
-const sampleGridSlider = getRequiredElement("sample-grid-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
-const sampleGridInput = getRequiredElement("sample-grid-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
-const sampleGridValue = getRequiredElement("sample-grid-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
+const sampleDensitySlider = getRequiredElement("sample-density-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const sampleDensityInput = getRequiredElement("sample-density-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
+const sampleDensityValue = getRequiredElement("sample-density-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
 const gainSlider = getRequiredElement("gain-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const gainInput = getRequiredElement("gain-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const gainValue = getRequiredElement("gain-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
@@ -59,26 +62,32 @@ const plateauInput = getRequiredElement("plateau-input", (element): element is H
 const plateauValue = getRequiredElement("plateau-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
 const transferPlot = getRequiredElement("transfer-plot", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const viewResetButton = getRequiredElement("view-reset", (element): element is HTMLButtonElement => element instanceof HTMLButtonElement);
+const sourceViewResetButton = getRequiredElement("source-view-reset", (element): element is HTMLButtonElement => element instanceof HTMLButtonElement);
 const gridEnabled = getRequiredElement("grid-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const diagonalsEnabled = getRequiredElement("diagonals-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const stage = getRequiredParentElement(scene);
+const sourceFrame = getRequiredParentElement(sourceScene);
 const minTime = Number(timeSlider.min);
 const maxTime = Number(timeSlider.max);
-const minSampleGridSize = Number(sampleGridSlider.min);
-const maxSampleGridSize = Number(sampleGridSlider.max);
+const minSampleDensity = Number(sampleDensitySlider.min);
+const maxSampleDensity = Number(sampleDensitySlider.max);
 const minGain = Number(gainSlider.min);
 const maxGain = Number(gainSlider.max);
 const minPlateau = Number(plateauSlider.min);
 const maxPlateau = Number(plateauSlider.max);
 
 let currentTime = Number(timeInput.value);
-let currentSampleGridSize = Number(sampleGridInput.value);
+let currentSampleDensity = Number(sampleDensityInput.value);
 let currentGain = Number(gainInput.value);
 let currentPlateau = Number(plateauInput.value);
 let stageSize: StageSize = { width: 0, height: 0 };
 let sceneViewport: SceneViewport = createDefaultSceneViewport(1, 1);
 let viewportMode: "default" | "custom" = "default";
 let panState: PanState | null = null;
+let sourceDefaultViewport: SceneViewport = createDefaultSceneViewport(1, 1);
+let sourceViewport: SceneViewport = createDefaultSceneViewport(1, 1);
+let sourceViewportMode: "default" | "custom" = "default";
+let sourcePanState: PanState | null = null;
 let activeRequestId = 0;
 let activeController: AbortController | null = null;
 
@@ -179,20 +188,76 @@ function resetViewport(): void {
 }
 
 function scenePointFromClient(clientX: number, clientY: number): Point {
-  const rect = scene.getBoundingClientRect();
+  return viewportPointFromClient(scene, sceneViewport, clientX, clientY);
+}
+
+function sourcePointFromClient(clientX: number, clientY: number): Point {
+  return viewportPointFromClient(sourceScene, sourceViewport, clientX, clientY);
+}
+
+function viewportPointFromClient(target: SVGSVGElement, viewport: SceneViewport, clientX: number, clientY: number): Point {
+  const rect = target.getBoundingClientRect();
   const normalizedX = rect.width > 0 ? (clientX - rect.left) / rect.width : 0.5;
   const normalizedY = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
   return {
-    x: sceneViewport.x + normalizedX * sceneViewport.width,
-    y: sceneViewport.y + normalizedY * sceneViewport.height,
+    x: viewport.x + normalizedX * viewport.width,
+    y: viewport.y + normalizedY * viewport.height,
   };
 }
 
 function applySceneViewBox(): void {
-  scene.setAttribute(
+  applyViewBox(scene, sceneViewport);
+}
+
+function applySourceViewBox(): void {
+  applyViewBox(sourceScene, sourceViewport);
+}
+
+function applyViewBox(target: SVGSVGElement, viewport: SceneViewport): void {
+  target.setAttribute(
     "viewBox",
-    `${sceneViewport.x.toFixed(2)} ${sceneViewport.y.toFixed(2)} ${sceneViewport.width.toFixed(2)} ${sceneViewport.height.toFixed(2)}`,
+    `${viewport.x.toFixed(2)} ${viewport.y.toFixed(2)} ${viewport.width.toFixed(2)} ${viewport.height.toFixed(2)}`,
   );
+}
+
+function setSourceViewport(nextViewport: SceneViewport, mode: "default" | "custom"): void {
+  sourceViewport = constrainViewport(nextViewport, sourceDefaultViewport);
+  sourceViewportMode = mode;
+  applySourceViewBox();
+}
+
+function resetSourceViewport(): void {
+  setSourceViewport(copyViewport(sourceDefaultViewport), "default");
+}
+
+function copyViewport(viewport: SceneViewport): SceneViewport {
+  return {
+    x: viewport.x,
+    y: viewport.y,
+    width: viewport.width,
+    height: viewport.height,
+  };
+}
+
+function parseViewBoxValue(viewBoxValue: string | null): SceneViewport {
+  if (viewBoxValue === null) {
+    throw new Error("SVG preview is missing a viewBox.");
+  }
+
+  const tokens = viewBoxValue.trim().split(/\s+/).filter((token) => token.length > 0);
+  if (tokens.length !== 4) {
+    throw new Error("SVG preview viewBox must contain four numbers.");
+  }
+
+  const x = Number(tokens[0]);
+  const y = Number(tokens[1]);
+  const width = Number(tokens[2]);
+  const height = Number(tokens[3]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new Error("SVG preview viewBox is invalid.");
+  }
+
+  return { x, y, width, height };
 }
 
 function renderTransferPlot(): void {
@@ -218,6 +283,7 @@ function renderTransferPlot(): void {
   const plateauEnd = mapPlotPoint({ x: bounds.maxX, y: currentPlateau }, bounds, TRANSFER_PLOT_FRAME);
   const kneeX = currentGain > 0.0 ? clamp(currentPlateau / currentGain, bounds.minX, bounds.maxX) : bounds.maxX;
   const kneePoint = mapPlotPoint({ x: kneeX, y: Math.min(currentPlateau, bounds.maxY) }, bounds, TRANSFER_PLOT_FRAME);
+  const kneeLabel = transferPlotValueLabel(kneePoint.x, kneePoint.y, `f(1)=${satur(currentGain, currentPlateau).toFixed(2)}`);
 
   transferPlot.append(
     createSvgLine(origin.x, origin.y, xEnd.x, xEnd.y, axisColor, 1.2, "4 4"),
@@ -226,9 +292,28 @@ function renderTransferPlot(): void {
     createSvgLine(kneePoint.x, origin.y, kneePoint.x, kneePoint.y, referenceColor, 1.0, "3 3"),
     createSvgText(xEnd.x + 2, xEnd.y - 4, "x", "end"),
     createSvgText(origin.x + 4, yEnd.y - 4, "y", "start"),
-    createSvgText(kneePoint.x + 4, kneePoint.y - 6, `f(1)=${satur(currentGain, currentPlateau).toFixed(2)}`, "start", "0.75rem"),
+    createSvgText(kneeLabel.x, kneeLabel.y, kneeLabel.content, kneeLabel.anchor, "0.75rem"),
     createSvgPath(pathData, curveColor, 2.2),
   );
+}
+
+function transferPlotValueLabel(x: number, y: number, content: string): { x: number; y: number; content: string; anchor: "start" | "end" } {
+  const rightEdge = TRANSFER_PLOT_FRAME.width - TRANSFER_PLOT_FRAME.paddingRight;
+  if (x >= rightEdge - TRANSFER_PLOT_RIGHT_LABEL_THRESHOLD) {
+    return {
+      x: x - TRANSFER_PLOT_LABEL_MARGIN,
+      y: y - 6,
+      content,
+      anchor: "end",
+    };
+  }
+
+  return {
+    x: x + TRANSFER_PLOT_LABEL_MARGIN,
+    y: y - 6,
+    content,
+    anchor: "start",
+  };
 }
 
 function createSvgLine(x1: number, y1: number, x2: number, y2: number, stroke: string, strokeWidth: number, strokeDasharray: string): SVGLineElement {
@@ -274,12 +359,12 @@ function syncTimeControls(): void {
 }
 
 function syncScalarControls(): void {
-  const formattedSampleGridSize = String(Math.round(currentSampleGridSize));
+  const formattedSampleDensity = currentSampleDensity.toFixed(SCALAR_CONTROL_DECIMALS);
   const formattedGain = currentGain.toFixed(SCALAR_CONTROL_DECIMALS);
   const formattedPlateau = currentPlateau.toFixed(SCALAR_CONTROL_DECIMALS);
-  sampleGridSlider.value = formattedSampleGridSize;
-  sampleGridInput.value = formattedSampleGridSize;
-  sampleGridValue.textContent = formattedSampleGridSize;
+  sampleDensitySlider.value = formattedSampleDensity;
+  sampleDensityInput.value = formattedSampleDensity;
+  sampleDensityValue.textContent = formattedSampleDensity;
   gainSlider.value = formattedGain;
   gainInput.value = formattedGain;
   gainValue.textContent = formattedGain;
@@ -298,12 +383,12 @@ function setCurrentTime(nextTime: number): void {
   void requestScene();
 }
 
-function setCurrentSampleGridSize(nextSampleGridSize: number): void {
-  if (!Number.isFinite(nextSampleGridSize)) {
+function setCurrentSampleDensity(nextSampleDensity: number): void {
+  if (!Number.isFinite(nextSampleDensity)) {
     syncScalarControls();
     return;
   }
-  currentSampleGridSize = Math.round(clamp(nextSampleGridSize, minSampleGridSize, maxSampleGridSize));
+  currentSampleDensity = clamp(nextSampleDensity, minSampleDensity, maxSampleDensity);
   syncScalarControls();
   renderTransferPlot();
   void requestScene();
@@ -340,13 +425,13 @@ function commitTimeInputValue(): void {
   setCurrentTime(Number(rawValue));
 }
 
-function commitSampleGridInputValue(): void {
-  const rawValue = sampleGridInput.value.trim();
+function commitSampleDensityInputValue(): void {
+  const rawValue = sampleDensityInput.value.trim();
   if (rawValue === "") {
     syncScalarControls();
     return;
   }
-  setCurrentSampleGridSize(Number(rawValue));
+  setCurrentSampleDensity(Number(rawValue));
 }
 
 function commitGainInputValue(): void {
@@ -373,12 +458,15 @@ async function requestScene(): Promise<void> {
   syncViewportWithStage(width, height);
   applySceneViewBox();
 
+  const geometry = createInitialGeometry(width, height, gridEnabled.checked, diagonalsEnabled.checked);
+  applySourceSvg(geometry.svg);
+
   const requestPayload: WarpRequest = {
-    geometry: createInitialGeometry(width, height, gridEnabled.checked, diagonalsEnabled.checked),
+    geometry,
     renderWidth: width,
     renderHeight: height,
     time: currentTime,
-    sampleGridSize: currentSampleGridSize,
+    samplesPerUnit: currentSampleDensity,
     gain: currentGain,
     plateau: currentPlateau,
   };
@@ -423,7 +511,23 @@ async function requestScene(): Promise<void> {
   }
 }
 
+function applySourceSvg(svgMarkup: string): void {
+  const parsedScene = parseSvgDocument(svgMarkup);
+  replaceSvgChildren(sourceScene, parsedScene);
+  sourceDefaultViewport = parseViewBoxValue(parsedScene.getAttribute("viewBox"));
+  sourceViewport = sourceViewportMode === "default"
+    ? copyViewport(sourceDefaultViewport)
+    : constrainViewport(sourceViewport, sourceDefaultViewport);
+  applySourceViewBox();
+}
+
 function applyServerSvg(svgMarkup: string): void {
+  const parsedScene = parseSvgDocument(svgMarkup);
+  replaceSvgChildren(scene, parsedScene);
+  caption.textContent = parsedScene.getAttribute("data-caption") ?? "";
+}
+
+function parseSvgDocument(svgMarkup: string): SVGSVGElement {
   const documentParser = new DOMParser();
   const parsedDocument = documentParser.parseFromString(svgMarkup, "image/svg+xml");
   const parsedScene = parsedDocument.documentElement;
@@ -436,9 +540,19 @@ function applyServerSvg(svgMarkup: string): void {
     throw new Error("Server returned malformed SVG markup.");
   }
 
-  const importedChildren = Array.from(parsedScene.childNodes, (child) => document.importNode(child, true));
-  scene.replaceChildren(...importedChildren);
-  caption.textContent = parsedScene.getAttribute("data-caption") ?? "";
+  return parsedScene as unknown as SVGSVGElement;
+}
+
+function replaceSvgChildren(target: SVGSVGElement, source: SVGSVGElement): void {
+  const viewBox = source.getAttribute("viewBox");
+  if (viewBox) {
+    target.setAttribute("viewBox", viewBox);
+  } else {
+    target.removeAttribute("viewBox");
+  }
+
+  const importedChildren = Array.from(source.childNodes, (child) => document.importNode(child, true));
+  target.replaceChildren(...importedChildren);
 }
 
 timeSlider.addEventListener("input", () => {
@@ -457,20 +571,20 @@ timeInput.addEventListener("keydown", (event: KeyboardEvent) => {
   commitTimeInputValue();
 });
 
-sampleGridSlider.addEventListener("input", () => {
-  setCurrentSampleGridSize(Number(sampleGridSlider.value));
+sampleDensitySlider.addEventListener("input", () => {
+  setCurrentSampleDensity(Number(sampleDensitySlider.value));
 });
 
-sampleGridInput.addEventListener("change", () => {
-  commitSampleGridInputValue();
+sampleDensityInput.addEventListener("change", () => {
+  commitSampleDensityInputValue();
 });
 
-sampleGridInput.addEventListener("keydown", (event: KeyboardEvent) => {
+sampleDensityInput.addEventListener("keydown", (event: KeyboardEvent) => {
   if (event.key !== "Enter") {
     return;
   }
   event.preventDefault();
-  commitSampleGridInputValue();
+  commitSampleDensityInputValue();
 });
 
 gainSlider.addEventListener("input", () => {
@@ -509,6 +623,10 @@ viewResetButton.addEventListener("click", () => {
   resetViewport();
 });
 
+sourceViewResetButton.addEventListener("click", () => {
+  resetSourceViewport();
+});
+
 gridEnabled.addEventListener("change", () => {
   void requestScene();
 });
@@ -537,6 +655,22 @@ scene.addEventListener("wheel", (event: WheelEvent) => {
   applySceneViewBox();
 }, { passive: false });
 
+sourceScene.addEventListener("wheel", (event: WheelEvent) => {
+  event.preventDefault();
+  const anchor = sourcePointFromClient(event.clientX, event.clientY);
+  const zoomFactor = Math.exp(event.deltaY * 0.0015);
+  const nextWidth = sourceViewport.width * zoomFactor;
+  const nextHeight = sourceViewport.height * zoomFactor;
+  const anchorRatioX = sourceViewport.width > 0.0 ? (anchor.x - sourceViewport.x) / sourceViewport.width : 0.5;
+  const anchorRatioY = sourceViewport.height > 0.0 ? (anchor.y - sourceViewport.y) / sourceViewport.height : 0.5;
+  setSourceViewport({
+    x: anchor.x - anchorRatioX * nextWidth,
+    y: anchor.y - anchorRatioY * nextHeight,
+    width: nextWidth,
+    height: nextHeight,
+  }, "custom");
+}, { passive: false });
+
 scene.addEventListener("pointerdown", (event: PointerEvent) => {
   if (event.button !== 0) {
     return;
@@ -549,6 +683,20 @@ scene.addEventListener("pointerdown", (event: PointerEvent) => {
   };
   stage.classList.add("is-panning");
   scene.setPointerCapture(event.pointerId);
+});
+
+sourceScene.addEventListener("pointerdown", (event: PointerEvent) => {
+  if (event.button !== 0) {
+    return;
+  }
+  sourcePanState = {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    originViewport: sourceViewport,
+  };
+  sourceFrame.classList.add("is-panning");
+  sourceScene.setPointerCapture(event.pointerId);
 });
 
 scene.addEventListener("pointermove", (event: PointerEvent) => {
@@ -570,6 +718,24 @@ scene.addEventListener("pointermove", (event: PointerEvent) => {
   applySceneViewBox();
 });
 
+sourceScene.addEventListener("pointermove", (event: PointerEvent) => {
+  if (sourcePanState?.pointerId !== event.pointerId) {
+    return;
+  }
+  const rect = sourceScene.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+  const deltaX = (event.clientX - sourcePanState.clientX) / rect.width * sourcePanState.originViewport.width;
+  const deltaY = (event.clientY - sourcePanState.clientY) / rect.height * sourcePanState.originViewport.height;
+  setSourceViewport({
+    x: sourcePanState.originViewport.x - deltaX,
+    y: sourcePanState.originViewport.y - deltaY,
+    width: sourcePanState.originViewport.width,
+    height: sourcePanState.originViewport.height,
+  }, "custom");
+});
+
 function clearPanState(pointerId: number): void {
   if (panState?.pointerId !== pointerId) {
     return;
@@ -578,16 +744,36 @@ function clearPanState(pointerId: number): void {
   stage.classList.remove("is-panning");
 }
 
+function clearSourcePanState(pointerId: number): void {
+  if (sourcePanState?.pointerId !== pointerId) {
+    return;
+  }
+  sourcePanState = null;
+  sourceFrame.classList.remove("is-panning");
+}
+
 scene.addEventListener("pointerup", (event: PointerEvent) => {
   clearPanState(event.pointerId);
+});
+
+sourceScene.addEventListener("pointerup", (event: PointerEvent) => {
+  clearSourcePanState(event.pointerId);
 });
 
 scene.addEventListener("pointercancel", (event: PointerEvent) => {
   clearPanState(event.pointerId);
 });
 
+sourceScene.addEventListener("pointercancel", (event: PointerEvent) => {
+  clearSourcePanState(event.pointerId);
+});
+
 scene.addEventListener("lostpointercapture", (event: PointerEvent) => {
   clearPanState(event.pointerId);
+});
+
+sourceScene.addEventListener("lostpointercapture", (event: PointerEvent) => {
+  clearSourcePanState(event.pointerId);
 });
 
 const resizeObserver = new ResizeObserver(() => {

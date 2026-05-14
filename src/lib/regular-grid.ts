@@ -6,6 +6,10 @@ export interface RegularGridSpec extends BoundingBox {
   readonly rows: number;
 }
 
+export interface RegularGridResolution {
+  readonly samplesPerUnit: number;
+}
+
 export interface RegularGrid {
   readonly spec: RegularGridSpec;
   readonly components: number;
@@ -22,6 +26,19 @@ export function createRegularGrid(spec: RegularGridSpec, components: number): Re
     stepX: (spec.maxX - spec.minX) / (spec.columns - 1),
     stepY: (spec.maxY - spec.minY) / (spec.rows - 1),
     values: new Float64Array(spec.columns * spec.rows * components),
+  };
+}
+
+export function resolveRegularGridSpec(bounds: BoundingBox, resolution: RegularGridResolution): RegularGridSpec {
+  validateRegularGridResolution(resolution);
+  validateBoundingBox(bounds);
+  return {
+    minX: bounds.minX,
+    minY: bounds.minY,
+    maxX: bounds.maxX,
+    maxY: bounds.maxY,
+    columns: resolveAxisSampleCount(bounds.maxX - bounds.minX, resolution.samplesPerUnit),
+    rows: resolveAxisSampleCount(bounds.maxY - bounds.minY, resolution.samplesPerUnit),
   };
 }
 
@@ -49,10 +66,24 @@ export function validateRegularGridSpec(spec: RegularGridSpec, components: numbe
   if (!Number.isInteger(components) || components < 1) {
     throw new Error("Regular grid must have at least one component.");
   }
-  if (!(Number.isFinite(spec.minX) && Number.isFinite(spec.maxX) && spec.minX < spec.maxX)) {
+  validateBoundingBox(spec);
+}
+
+export function validateRegularGridResolution(resolution: RegularGridResolution): void {
+  if (!Number.isFinite(resolution.samplesPerUnit) || resolution.samplesPerUnit <= 0.0) {
+    throw new Error("Regular grid samples per unit must be positive and finite.");
+  }
+}
+
+function resolveAxisSampleCount(length: number, samplesPerUnit: number): number {
+  return Math.max(4, Math.ceil(length * samplesPerUnit) + 1);
+}
+
+function validateBoundingBox(bounds: BoundingBox): void {
+  if (!(Number.isFinite(bounds.minX) && Number.isFinite(bounds.maxX) && bounds.minX < bounds.maxX)) {
     throw new Error("Regular grid x bounds must be finite and strictly increasing.");
   }
-  if (!(Number.isFinite(spec.minY) && Number.isFinite(spec.maxY) && spec.minY < spec.maxY)) {
+  if (!(Number.isFinite(bounds.minY) && Number.isFinite(bounds.maxY) && bounds.minY < bounds.maxY)) {
     throw new Error("Regular grid y bounds must be finite and strictly increasing.");
   }
 }

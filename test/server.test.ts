@@ -65,7 +65,7 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
       renderWidth: 640,
       renderHeight: 480,
       time: 16,
-      sampleGridSize: 64,
+      samplesPerUnit: 1.0,
       gain: 0.75,
       plateau: 0.75,
     };
@@ -76,6 +76,16 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
       body: JSON.stringify(requestBody),
     });
     const payload = await response.json() as { svg: string };
+
+    const zeroTimeResponse = await fetch(`${baseUrl}/api/warp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...requestBody,
+        time: 0,
+      }),
+    });
+    const zeroTimePayload = await zeroTimeResponse.json() as { svg: string };
 
     const noGridResponse = await fetch(`${baseUrl}/api/warp`, {
       method: "POST",
@@ -97,6 +107,41 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     });
     const noDiagonalPayload = await noDiagonalResponse.json() as { svg: string };
 
+    const styledGeometrySvg = [
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">',
+      '<g id="outer-boundary"><polyline fill="none" stroke="#102030" stroke-width="4.5" stroke-linecap="square" stroke-linejoin="round" vector-effect="non-scaling-stroke" points="1,1 9,1 9,9 1,9 1,1" /></g>',
+      '<g id="inner-boundary"><polyline fill="none" stroke="#203040" stroke-width="1.5" stroke-linecap="butt" stroke-linejoin="miter" vector-effect="non-scaling-stroke" points="4,4 6,4 6,6 4,6 4,4" /></g>',
+      '<g id="horizontal-grid"><polyline fill="none" stroke="#ff00aa" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="bevel" vector-effect="non-scaling-stroke" opacity="0.42" points="1,5 9,5" /></g>',
+      '</svg>',
+    ].join("");
+
+    const styledGeometryResponse = await fetch(`${baseUrl}/api/warp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...requestBody,
+        geometry: {
+          format: WARP_GEOMETRY_FORMAT,
+          svg: styledGeometrySvg,
+        },
+      }),
+    });
+    const styledGeometryPayload = await styledGeometryResponse.json() as { svg: string };
+
+    const styledZeroTimeResponse = await fetch(`${baseUrl}/api/warp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...requestBody,
+        time: 0,
+        geometry: {
+          format: WARP_GEOMETRY_FORMAT,
+          svg: styledGeometrySvg,
+        },
+      }),
+    });
+    const styledZeroTimePayload = await styledZeroTimeResponse.json() as { svg: string };
+
     const invalidGeometryResponse = await fetch(`${baseUrl}/api/warp`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -104,11 +149,24 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
         ...requestBody,
         geometry: {
           format: WARP_GEOMETRY_FORMAT,
-          svg: "<svg><g id=\"outer-boundary\"><polyline points=\"0,0 1,0 1,1\" /></g></svg>",
+          svg: "<svg viewBox=\"0 0 10 10\"><g id=\"outer-boundary\"><polyline points=\"0,0 1,0 1,1\" /></g></svg>",
         },
       }),
     });
     const invalidGeometryMessage = await invalidGeometryResponse.text();
+
+    const missingViewBoxResponse = await fetch(`${baseUrl}/api/warp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...requestBody,
+        geometry: {
+          format: WARP_GEOMETRY_FORMAT,
+          svg: "<svg><g id=\"outer-boundary\"><polyline points=\"0,0 10,0 10,10 0,10\" /></g><g id=\"inner-boundary\"><polyline points=\"1,1 2,1 2,2 1,2\" /></g></svg>",
+        },
+      }),
+    });
+    const missingViewBoxMessage = await missingViewBoxResponse.text();
 
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") ?? "", /application\/json/);
@@ -118,11 +176,35 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     assert.match(payload.svg, /data-caption="/);
     assert.ok(countSvgTag(payload.svg, "path") > countSvgTag(noGridPayload.svg, "path"));
     assert.ok(countSvgTag(payload.svg, "path") > countSvgTag(noDiagonalPayload.svg, "path"));
+    assert.equal(zeroTimeResponse.status, 200);
+    assert.ok(!zeroTimePayload.svg.includes(" C "));
+    assert.equal(styledGeometryResponse.status, 200);
+    assert.equal(styledZeroTimeResponse.status, 200);
+    assert.match(styledGeometryPayload.svg, /stroke="#ff00aa"/);
+    assert.match(styledGeometryPayload.svg, /stroke-width="7\.5"/);
+    assert.match(styledGeometryPayload.svg, /stroke-linecap="round"/);
+    assert.match(styledGeometryPayload.svg, /stroke-linejoin="bevel"/);
+    assert.match(styledGeometryPayload.svg, /opacity="0\.42"/);
+    assert.match(styledGeometryPayload.svg, /stroke="#102030"/);
+    assert.match(styledGeometryPayload.svg, /stroke-width="4\.5"/);
+    assert.match(styledGeometryPayload.svg, /stroke-linecap="square"/);
+    assert.match(styledGeometryPayload.svg, /stroke-linejoin="round"/);
+    assert.match(styledZeroTimePayload.svg, /stroke="#ff00aa"/);
+    assert.match(styledZeroTimePayload.svg, /stroke-width="7\.5"/);
+    assert.match(styledZeroTimePayload.svg, /stroke-linecap="round"/);
+    assert.match(styledZeroTimePayload.svg, /stroke-linejoin="bevel"/);
+    assert.match(styledZeroTimePayload.svg, /opacity="0\.42"/);
+    assert.match(styledZeroTimePayload.svg, /stroke="#102030"/);
+    assert.match(styledZeroTimePayload.svg, /stroke-width="4\.5"/);
+    assert.match(styledZeroTimePayload.svg, /stroke-linecap="square"/);
+    assert.match(styledZeroTimePayload.svg, /stroke-linejoin="round"/);
 
     assert.equal(noGridResponse.status, 200);
     assert.equal(noDiagonalResponse.status, 200);
     assert.equal(invalidGeometryResponse.status, 400);
     assert.match(invalidGeometryMessage, /inner-boundary group is required/);
+    assert.equal(missingViewBoxResponse.status, 400);
+    assert.match(missingViewBoxMessage, /viewBox/);
   } finally {
     await new Promise<void>((resolve) => {
       server.close(() => {

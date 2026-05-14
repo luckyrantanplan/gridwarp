@@ -1,7 +1,9 @@
 import { segmentsFromVertices, type WarpedPolylineShape } from "../render/polyline-overlay.js";
-import { PolygonShape } from "../lib/polygon-shape.js";
+import { PolygonShape, type BoundingBox } from "../lib/polygon-shape.js";
 import {
   WARP_GEOMETRY_GROUPS,
+  WARP_GEOMETRY_PRESENTATION,
+  type WarpGeometryPresentation,
   type WarpGeometry,
   WarpRequestError,
 } from "../shared/warp-request.js";
@@ -12,32 +14,84 @@ interface Point {
 }
 
 export interface ParsedWarpGeometry {
+  readonly worldBounds: BoundingBox;
   readonly outerBoundary: readonly Point[];
+  readonly outerBoundaryStyle: WarpGeometryPresentation;
   readonly horizontalGrid: readonly WarpedPolylineShape[];
+  readonly horizontalGridStyle: WarpGeometryPresentation;
   readonly verticalGrid: readonly WarpedPolylineShape[];
+  readonly verticalGridStyle: WarpGeometryPresentation;
   readonly innerBoundary: readonly WarpedPolylineShape[];
+  readonly innerBoundaryStyle: WarpGeometryPresentation;
   readonly diagonals: readonly WarpedPolylineShape[];
+  readonly diagonalsStyle: WarpGeometryPresentation;
+}
+
+interface ParsedPolylineGroup {
+  readonly polylines: Point[][];
+  readonly style: WarpGeometryPresentation;
 }
 
 export function parseGeometrySvg(geometry: WarpGeometry): ParsedWarpGeometry {
-  const svgExpression = /^\s*<svg\b[^>]*>([\s\S]*)<\/svg>\s*$/;
+  const svgExpression = /^\s*<svg\b([^>]*)>([\s\S]*)<\/svg>\s*$/;
   const svgMatch = svgExpression.exec(geometry.svg);
   if (!svgMatch) {
     throw new WarpRequestError("geometry.svg must contain a single svg root element.");
   }
 
-  const groups = extractGroups(svgMatch[1]);
-  const outerBoundary = parseClosedBoundary(groups.get(WARP_GEOMETRY_GROUPS.outerBoundary), WARP_GEOMETRY_GROUPS.outerBoundary);
-  const innerBoundary = parseClosedBoundary(groups.get(WARP_GEOMETRY_GROUPS.innerBoundary), WARP_GEOMETRY_GROUPS.innerBoundary);
+  const worldBounds = parseViewBox(attributeValue(svgMatch[1], "viewBox"));
+  const groups = extractGroups(svgMatch[2]);
+  const outerBoundaryGroup = parseClosedBoundaryGroup(groups.get(WARP_GEOMETRY_GROUPS.outerBoundary), WARP_GEOMETRY_GROUPS.outerBoundary);
+  const innerBoundaryGroup = parseClosedBoundaryGroup(groups.get(WARP_GEOMETRY_GROUPS.innerBoundary), WARP_GEOMETRY_GROUPS.innerBoundary);
+  const horizontalGridGroup = parseOpenShapeGroup(groups.get(WARP_GEOMETRY_GROUPS.horizontalGrid), WARP_GEOMETRY_GROUPS.horizontalGrid);
+  const verticalGridGroup = parseOpenShapeGroup(groups.get(WARP_GEOMETRY_GROUPS.verticalGrid), WARP_GEOMETRY_GROUPS.verticalGrid);
+  const diagonalsGroup = parseOpenShapeGroup(groups.get(WARP_GEOMETRY_GROUPS.diagonals), WARP_GEOMETRY_GROUPS.diagonals);
+  const outerBoundary = outerBoundaryGroup.points;
+  const innerBoundary = innerBoundaryGroup.points;
   const outerShape = new PolygonShape(outerBoundary);
   ensureBoundaryContains(outerShape, innerBoundary, WARP_GEOMETRY_GROUPS.innerBoundary);
 
   return {
+    worldBounds,
     outerBoundary,
-    horizontalGrid: parseOpenShapes(groups.get(WARP_GEOMETRY_GROUPS.horizontalGrid), WARP_GEOMETRY_GROUPS.horizontalGrid),
-    verticalGrid: parseOpenShapes(groups.get(WARP_GEOMETRY_GROUPS.verticalGrid), WARP_GEOMETRY_GROUPS.verticalGrid),
+    outerBoundaryStyle: outerBoundaryGroup.style,
+    horizontalGrid: horizontalGridGroup.shapes,
+    horizontalGridStyle: horizontalGridGroup.style,
+    verticalGrid: verticalGridGroup.shapes,
+    verticalGridStyle: verticalGridGroup.style,
     innerBoundary: [toClosedShape(innerBoundary)],
-    diagonals: parseOpenShapes(groups.get(WARP_GEOMETRY_GROUPS.diagonals), WARP_GEOMETRY_GROUPS.diagonals),
+    innerBoundaryStyle: innerBoundaryGroup.style,
+    diagonals: diagonalsGroup.shapes,
+    diagonalsStyle: diagonalsGroup.style,
+  };
+}
+
+function parseViewBox(viewBoxValue: string | null): BoundingBox {
+  if (viewBoxValue === null) {
+    throw new WarpRequestError("geometry.svg root must include a viewBox.");
+  }
+
+  const tokens = viewBoxValue.trim().split(/[\s,]+/).filter((token) => token.length > 0);
+  if (tokens.length !== 4) {
+    throw new WarpRequestError("geometry.svg viewBox must contain exactly four numbers.");
+  }
+
+  const minX = Number(tokens[0]);
+  const minY = Number(tokens[1]);
+  const width = Number(tokens[2]);
+  const height = Number(tokens[3]);
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new WarpRequestError("geometry.svg viewBox values must be finite numbers.");
+  }
+  if (width <= 0.0 || height <= 0.0) {
+    throw new WarpRequestError("geometry.svg viewBox width and height must be positive.");
+  }
+
+  return {
+    minX,
+    minY,
+    maxX: minX + width,
+    maxY: minY + height,
   };
 }
 
@@ -56,42 +110,48 @@ function extractGroups(svgBody: string): Map<string, string> {
   return groups;
 }
 
-function parseClosedBoundary(groupContent: string | undefined, groupId: string): Point[] {
-  const polylines = parsePolylinePoints(groupContent, groupId);
-  if (polylines.length !== 1) {
+function parseClosedBoundaryGroup(groupContent: string | undefined, groupId: string): { points: Point[]; style: WarpGeometryPresentation } {
+  const group = parsePolylineGroup(groupContent, groupId);
+  if (group.polylines.length !== 1) {
     throw new WarpRequestError(`${groupId} must contain exactly one polyline.`);
   }
-  const points = polylines[0];
+  const points = group.polylines[0];
   if (points.length < 3) {
     throw new WarpRequestError(`${groupId} must contain at least three points.`);
   }
   if (polygonArea(points) === 0) {
     throw new WarpRequestError(`${groupId} must not be degenerate.`);
   }
-  return normalizeClosedPolyline(points);
+  return {
+    points: normalizeClosedPolyline(points),
+    style: group.style,
+  };
 }
 
-function parseOpenShapes(groupContent: string | undefined, groupId: string): WarpedPolylineShape[] {
-  if (groupContent === undefined) {
-    return [];
-  }
-  const polylines = parsePolylinePoints(groupContent, groupId);
-  return polylines.map((points) => {
+function parseOpenShapeGroup(groupContent: string | undefined, groupId: string): { shapes: WarpedPolylineShape[]; style: WarpGeometryPresentation } {
+  const group = parsePolylineGroup(groupContent, groupId);
+  return {
+    style: group.style,
+    shapes: group.polylines.map((points) => {
     if (points.length < 2) {
       throw new WarpRequestError(`${groupId} polylines must contain at least two points.`);
     }
     return {
       segments: segmentsFromVertices(points, false),
     };
-  });
+    }),
+  };
 }
 
-function parsePolylinePoints(groupContent: string | undefined, groupId: string): Point[][] {
+function parsePolylineGroup(groupContent: string | undefined, groupId: string): ParsedPolylineGroup {
   if (groupContent === undefined) {
     if (groupId === WARP_GEOMETRY_GROUPS.outerBoundary || groupId === WARP_GEOMETRY_GROUPS.innerBoundary) {
       throw new WarpRequestError(`${groupId} group is required.`);
     }
-    return [];
+    return {
+      polylines: [],
+      style: defaultPresentation(groupId),
+    };
   }
 
   const disallowedContent = groupContent.replace(/<polyline\b[^>]*\/?>/g, "").trim();
@@ -100,9 +160,13 @@ function parsePolylinePoints(groupContent: string | undefined, groupId: string):
   }
 
   const polylines: Point[][] = [];
+  let style = defaultPresentation(groupId);
   const polylineExpression = /<polyline\b([^>]*)\/?>/g;
   let match = polylineExpression.exec(groupContent);
   while (match !== null) {
+    if (polylines.length === 0) {
+      style = parsePresentation(match[1], groupId);
+    }
     const pointsValue = attributeValue(match[1], "points");
     if (pointsValue === null) {
       throw new WarpRequestError(`${groupId} polyline is missing points.`);
@@ -115,7 +179,10 @@ function parsePolylinePoints(groupContent: string | undefined, groupId: string):
     throw new WarpRequestError(`${groupId} must contain at least one polyline.`);
   }
 
-  return polylines;
+  return {
+    polylines,
+    style,
+  };
 }
 
 function parsePoints(pointsValue: string, groupId: string): Point[] {
@@ -176,6 +243,69 @@ function toClosedShape(points: readonly Point[]): WarpedPolylineShape {
     segments: segmentsFromVertices(points, true),
     closed: true,
   };
+}
+
+function parsePresentation(attributes: string, groupId: string): WarpGeometryPresentation {
+  const defaults = defaultPresentation(groupId);
+  const stroke = nonEmptyAttribute(attributes, "stroke") ?? defaults.stroke;
+  const strokeWidth = numericAttribute(attributes, "stroke-width") ?? defaults.strokeWidth;
+  const strokeLineCap = nonEmptyAttribute(attributes, "stroke-linecap") ?? defaults.strokeLineCap;
+  const strokeLineJoin = nonEmptyAttribute(attributes, "stroke-linejoin") ?? defaults.strokeLineJoin;
+  const vectorEffect = nonEmptyAttribute(attributes, "vector-effect") ?? defaults.vectorEffect;
+  const opacity = numericAttribute(attributes, "opacity") ?? defaults.opacity;
+
+  const presentation: WarpGeometryPresentation = {
+    stroke,
+    strokeWidth,
+    strokeLineCap,
+    strokeLineJoin,
+    vectorEffect,
+  };
+  if (opacity !== undefined) {
+    return {
+      ...presentation,
+      opacity,
+    };
+  }
+  return presentation;
+}
+
+function defaultPresentation(groupId: string): WarpGeometryPresentation {
+  const defaults = WARP_GEOMETRY_PRESENTATION[groupId];
+  const presentation: WarpGeometryPresentation = {
+    stroke: defaults.stroke,
+    strokeWidth: defaults.strokeWidth,
+    strokeLineCap: defaults.strokeLineCap,
+    strokeLineJoin: defaults.strokeLineJoin,
+    vectorEffect: defaults.vectorEffect,
+  };
+  if (defaults.opacity !== undefined) {
+    return {
+      ...presentation,
+      opacity: defaults.opacity,
+    };
+  }
+  return presentation;
+}
+
+function nonEmptyAttribute(attributes: string, attributeName: string): string | null {
+  const value = attributeValue(attributes, attributeName);
+  if (value === null || value.trim() === "") {
+    return null;
+  }
+  return value;
+}
+
+function numericAttribute(attributes: string, attributeName: string): number | undefined {
+  const value = attributeValue(attributes, attributeName);
+  if (value === null) {
+    return undefined;
+  }
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < 0.0) {
+    throw new WarpRequestError(`${attributeName} must be a non-negative finite number.`);
+  }
+  return numericValue;
 }
 
 function attributeValue(attributes: string, attributeName: string): string | null {

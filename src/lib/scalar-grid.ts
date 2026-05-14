@@ -3,18 +3,21 @@ import {
   createRegularGrid,
   regularGridPoint,
   regularGridValueIndex,
+  resolveRegularGridSpec,
+  validateRegularGridResolution,
   validateRegularGridSpec,
   type RegularGrid,
+  type RegularGridResolution,
   type RegularGridSpec,
 } from "./regular-grid.js";
 import { satur } from "./saturation.js";
 
 export type ScalarGridSpec = RegularGridSpec;
+export type ScalarGridResolution = RegularGridResolution;
 
 export interface PolygonScalarSurfaceSettings {
-  readonly columns: number;
-  readonly rows: number;
-  readonly padding: number;
+  readonly worldBounds: BoundingBox;
+  readonly samplesPerUnit: number;
   readonly gain: number;
   readonly plateau: number;
 }
@@ -26,16 +29,7 @@ export function createPolygonScalarGrid(
   settings: PolygonScalarSurfaceSettings,
 ): ScalarGrid {
   validatePolygonScalarSurfaceSettings(settings);
-  const polygonBounds = polygon.min_ortho_rectangle();
-  const bounds = expandBoundingBox(polygonBounds, settings.padding);
-  const spec: ScalarGridSpec = {
-    columns: settings.columns,
-    rows: settings.rows,
-    minX: bounds.minX,
-    minY: bounds.minY,
-    maxX: bounds.maxX,
-    maxY: bounds.maxY,
-  };
+  const spec: ScalarGridSpec = resolveRegularGridSpec(settings.worldBounds, { samplesPerUnit: settings.samplesPerUnit });
   const grid = createScalarGrid(spec);
   const interiorScale = Math.max(polygon.max_interior_distance(), 1.0e-8);
 
@@ -81,33 +75,15 @@ function noise2D(noiseX: number, noiseY: number): number {
   return 0.35;
 }
 
-function expandBoundingBox(bounds: BoundingBox, padding: number): BoundingBox {
-  return {
-    minX: bounds.minX - padding,
-    minY: bounds.minY - padding,
-    maxX: bounds.maxX + padding,
-    maxY: bounds.maxY + padding,
-  };
-}
-
 function validatePolygonScalarSurfaceSettings(settings: PolygonScalarSurfaceSettings): void {
-  if (!Number.isFinite(settings.padding) || settings.padding < 0.0) {
-    throw new Error("Scalar surface padding must be non-negative and finite.");
-  }
+  validateRegularGridResolution({ samplesPerUnit: settings.samplesPerUnit });
   if (!Number.isFinite(settings.gain) || settings.gain <= 0.0) {
     throw new Error("Scalar surface gain must be positive and finite.");
   }
   if (!Number.isFinite(settings.plateau) || settings.plateau <= 0.0) {
     throw new Error("Scalar surface plateau must be positive and finite.");
   }
-  validateScalarGridSpec({
-    columns: settings.columns,
-    rows: settings.rows,
-    minX: 0.0,
-    minY: 0.0,
-    maxX: 1.0,
-    maxY: 1.0,
-  });
+  resolveRegularGridSpec(settings.worldBounds, { samplesPerUnit: settings.samplesPerUnit });
 }
 
 function validateScalarGridSpec(spec: ScalarGridSpec): void {

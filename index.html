@@ -5,308 +5,64 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scalar Warp Grid</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <style>
-    :root {
-      color-scheme: light;
-      --paper: #f6f4ef;
-      --ink: #161616;
-      --muted: #6a675f;
-      --red: #d4372f;
-      --green: #148a45;
-      --frame: #d8d2c6;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at top, #fff9ef 0%, var(--paper) 50%, #ece7dd 100%);
-      color: var(--ink);
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-    }
-
-    main {
-      min-height: 100vh;
-      display: grid;
-      grid-template-rows: auto 1fr;
-      gap: 16px;
-      padding: 18px;
-    }
-
-    .panel {
-      display: flex;
-      justify-content: space-between;
-      align-items: end;
-      gap: 16px;
-      padding: 14px 18px;
-      border: 1px solid var(--frame);
-      border-radius: 14px;
-      background: rgba(255, 255, 255, 0.72);
-      backdrop-filter: blur(10px);
-    }
-
-    h1 {
-      margin: 0;
-      font-size: 1rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    p {
-      margin: 4px 0 0;
-      color: var(--muted);
-      font-size: 0.95rem;
-    }
-
-    .panel-stack {
-      display: grid;
-      gap: 12px;
-      justify-items: end;
-    }
-
-    .legend {
-      display: flex;
-      gap: 14px;
-      flex-wrap: wrap;
-      font-size: 0.9rem;
-      color: var(--muted);
-    }
-
-    .controls {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-      color: var(--muted);
-      font-size: 0.9rem;
-    }
-
-    .controls button {
-      font: inherit;
-    }
-
-    .controls label {
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      font-size: 0.78rem;
-    }
-
-    .controls output {
-      min-width: 3.5ch;
-      color: var(--ink);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .controls input[type="number"] {
-      width: 5.5rem;
-      padding: 0.35rem 0.5rem;
-      border: 1px solid var(--frame);
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.92);
-      color: var(--ink);
-      font: inherit;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .controls input[type="range"] {
-      width: min(240px, 42vw);
-      accent-color: var(--ink);
-    }
-
-    .toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--ink);
-      letter-spacing: normal;
-      text-transform: none;
-      font-size: 0.9rem;
-    }
-
-    .toggle input[type="checkbox"] {
-      margin: 0;
-      accent-color: var(--ink);
-    }
-
-    .ghost-button {
-      padding: 0.4rem 0.8rem;
-      border: 1px solid var(--frame);
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.92);
-      color: var(--ink);
-      cursor: pointer;
-    }
-
-    .ghost-button:hover {
-      background: rgba(255, 255, 255, 1);
-    }
-
-    .legend span {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .legend span::before {
-      content: "";
-      width: 18px;
-      height: 2px;
-      border-radius: 999px;
-      background: currentColor;
-    }
-
-    .legend .horizontal {
-      color: var(--red);
-    }
-
-    .legend .vertical {
-      color: var(--green);
-    }
-
-    .stage {
-      position: relative;
-      border: 1px solid var(--frame);
-      border-radius: 18px;
-      overflow: hidden;
-      background: white;
-      box-shadow: 0 16px 40px rgba(68, 56, 34, 0.08);
-      cursor: grab;
-      touch-action: none;
-    }
-
-    .stage.is-panning {
-      cursor: grabbing;
-    }
-
-    svg {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-
-    .preview-panel {
-      width: min(100%, 320px);
-      padding: 12px 14px;
-      border: 1px solid var(--frame);
-      border-radius: 14px;
-      background: rgba(255, 255, 255, 0.82);
-      backdrop-filter: blur(10px);
-    }
-
-    .preview-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 10px;
-    }
-
-    .preview-title {
-      margin: 0;
-      color: var(--ink);
-      font-size: 0.82rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .preview-equation {
-      margin: 2px 0 0;
-      color: var(--muted);
-      font-size: 0.8rem;
-      font-family: "IBM Plex Mono", "Cascadia Code", monospace;
-    }
-
-    .preview-plot {
-      width: 100%;
-      height: 148px;
-      border: 1px solid rgba(216, 210, 198, 0.9);
-      border-radius: 10px;
-      background:
-        linear-gradient(180deg, rgba(246, 244, 239, 0.9), rgba(255, 255, 255, 0.96));
-    }
-
-    .preview-hint {
-      margin: 10px 0 0;
-      color: var(--muted);
-      font-size: 0.78rem;
-      line-height: 1.35;
-    }
-
-    .caption {
-      position: absolute;
-      left: 16px;
-      bottom: 14px;
-      max-width: calc(100% - 32px);
-      padding: 8px 10px;
-      border-radius: 12px;
-      background: rgba(255, 255, 255, 0.92);
-      color: var(--muted);
-      font-size: 0.82rem;
-      letter-spacing: 0.02em;
-      line-height: 1.3;
-    }
-
-    @media (max-width: 720px) {
-      main {
-        padding: 12px;
-      }
-
-      .panel {
-        align-items: start;
-        flex-direction: column;
-      }
-
-      .panel-stack {
-        justify-items: stretch;
-        width: 100%;
-      }
-
-      .preview-panel {
-        width: 100%;
-      }
-
-      .preview-head {
-        align-items: start;
-        flex-direction: column;
-      }
-
-      .caption {
-        left: 12px;
-        right: 12px;
-        bottom: 12px;
-        max-width: none;
-        padding: 7px 9px;
-        font-size: 0.78rem;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <main>
-    <section class="panel">
+  <main aria-labelledby="page-title">
+    <section class="option-panel" role="region" aria-labelledby="geometry-options-title">
+      <div class="option-panel-head">
+        <div>
+          <h2 id="geometry-options-title" class="section-title">Geometry Options</h2>
+          <p class="section-summary">Choose which source overlays are included in the preview and server payload.</p>
+        </div>
+      </div>
+      <div class="option-toggles" role="group" aria-labelledby="geometry-options-title">
+        <label class="toggle" for="grid-enabled">
+          <input id="grid-enabled" type="checkbox" checked>
+          <span>Trace grid</span>
+        </label>
+        <label class="toggle" for="diagonals-enabled">
+          <input id="diagonals-enabled" type="checkbox" checked>
+          <span>Draw diagonals</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="source-panel" role="region" aria-labelledby="source-panel-title">
+      <div class="source-panel-head">
+        <div>
+          <h2 id="source-panel-title" class="section-title">Initial SVG</h2>
+          <p class="section-summary">Client-side source geometry before scalar warping.</p>
+        </div>
+        <button id="source-view-reset" class="ghost-button" type="button">Reset preview</button>
+      </div>
+      <div class="source-frame">
+        <svg id="source-scene" class="source-scene" xmlns="http://www.w3.org/2000/svg" aria-label="Initial SVG before warping"></svg>
+      </div>
+      <p class="source-hint">Initial view: mouse wheel to zoom, drag to pan.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="page-title page-summary">
       <div>
-        <h1>Scalar Warp Grid</h1>
-        <p>SVG contours over a C1 scalar-amplitude warp.</p>
+        <h1 id="page-title">Scalar Warp Grid</h1>
+        <p id="page-summary">SVG contours over a C1 scalar-amplitude warp.</p>
       </div>
       <div class="panel-stack">
-        <div class="legend" aria-label="Legend">
+        <div class="legend" role="group" aria-labelledby="legend-title">
+          <span id="legend-title" class="sr-only">Line legend</span>
           <span class="horizontal">Horizontal</span>
           <span class="vertical">Vertical</span>
         </div>
-        <div class="controls">
+        <div class="controls" role="group" aria-labelledby="controls-title">
+          <span id="controls-title" class="sr-only">Warp controls</span>
           <label for="time-slider">Time</label>
           <input id="time-slider" type="range" min="0" max="600" step="0.1" value="16">
           <input id="time-input" type="number" min="0" max="600" step="0.1" value="16.0" inputmode="decimal" aria-label="Time value">
           <output id="time-value" for="time-slider time-input">16.0</output>
-          <label for="sample-grid-slider">Sample grid</label>
-          <input id="sample-grid-slider" type="range" min="4" max="128" step="4" value="128">
-          <input id="sample-grid-input" type="number" min="4" max="128" step="4" value="128" inputmode="numeric" aria-label="Sample grid size">
-          <output id="sample-grid-value" for="sample-grid-slider sample-grid-input">128</output>
+          <label for="sample-density-slider">Sample density</label>
+          <input id="sample-density-slider" type="range" min="0.25" max="10.00" step="0.25" value="1.00">
+          <input id="sample-density-input" type="number" min="0.25" max="10.00" step="0.25" value="1.00" inputmode="decimal" aria-label="Samples per unit">
+          <output id="sample-density-value" for="sample-density-slider sample-density-input">1.00</output>
           <label for="gain-slider">Gain</label>
           <input id="gain-slider" type="range" min="0.10" max="2.50" step="0.01" value="0.75">
           <input id="gain-input" type="number" min="0.10" max="2.50" step="0.01" value="0.75" inputmode="decimal" aria-label="Gain value">
@@ -316,19 +72,11 @@
           <input id="plateau-input" type="number" min="0.05" max="1.50" step="0.01" value="0.75" inputmode="decimal" aria-label="Plateau value">
           <output id="plateau-value" for="plateau-slider plateau-input">0.75</output>
           <button id="view-reset" class="ghost-button" type="button">Reset view</button>
-          <label class="toggle" for="grid-enabled">
-            <input id="grid-enabled" type="checkbox" checked>
-            <span>Trace grid</span>
-          </label>
-          <label class="toggle" for="diagonals-enabled">
-            <input id="diagonals-enabled" type="checkbox" checked>
-            <span>Draw diagonals</span>
-          </label>
         </div>
-        <div class="preview-panel">
+        <div class="preview-panel" role="region" aria-labelledby="transfer-plot-title">
           <div class="preview-head">
             <div>
-              <p class="preview-title">Transfer Plot</p>
+              <p class="preview-title" id="transfer-plot-title">Transfer Plot</p>
               <p class="preview-equation">f(x) = satur(gain · x, plateau)</p>
             </div>
           </div>
@@ -338,8 +86,9 @@
       </div>
     </section>
 
-    <section class="stage">
-      <svg id="scene" xmlns="http://www.w3.org/2000/svg" aria-label="Scalar warp grid demo"></svg>
+    <section class="stage" aria-labelledby="scene-panel-title">
+      <h2 id="scene-panel-title" class="sr-only">Warp scene</h2>
+      <svg id="scene" xmlns="http://www.w3.org/2000/svg" aria-labelledby="scene-panel-title caption"></svg>
       <div class="caption" id="caption"></div>
     </section>
   </main>

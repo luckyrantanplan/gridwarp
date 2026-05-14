@@ -4,6 +4,7 @@
 import type { Point, TangentSample, TracedComponent } from "./types.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+const CORNER_TURN_THRESHOLD = Math.PI / 12;
 
 /**
  * Converts traced contour samples into smooth SVG cubic Bézier paths.
@@ -32,7 +33,8 @@ export class SvgContourRenderer {
   }
 
   private buildPathData(component: TracedComponent): string {
-    const samples = this.preparePathSamples(component);
+    const preparedPath = this.preparePathSamples(component);
+    const { samples, cornerFlags } = preparedPath;
     if (samples.length < 2) return "";
 
     let pathData = `M ${this.formatNumber(samples[0].x)} ${this.formatNumber(samples[0].y)}`;
@@ -41,6 +43,11 @@ export class SvgContourRenderer {
     for (let index = 0; index < segmentCount; index += 1) {
       const start = samples[index];
       const end = samples[index + 1];
+      if (cornerFlags[index] || cornerFlags[index + 1]) {
+        pathData += ` L ${this.formatNumber(end.x)} ${this.formatNumber(end.y)}`;
+        continue;
+      }
+
       const segmentLength = distance(start, end);
       const handleLength = segmentLength / 3;
       const control1 = {
@@ -58,15 +65,26 @@ export class SvgContourRenderer {
     return pathData;
   }
 
-  private preparePathSamples(component: TracedComponent): TangentSample[] {
-    if (!component.closed) return component.samples;
+  private preparePathSamples(component: TracedComponent): { samples: TangentSample[]; cornerFlags: boolean[] } {
+    const cornerFlags = buildCornerFlags(component.samples, component.closed);
+    if (!component.closed) {
+      return {
+        samples: component.samples,
+        cornerFlags,
+      };
+    }
+
     const seamIndex = this.chooseClosedPathSeam(component.samples);
     const rotated = rotateSamples(component.samples, seamIndex);
+    const rotatedFlags = rotateValues(cornerFlags, seamIndex);
     const first = rotated[0];
-    return [
-      ...rotated,
-      { x: first.x, y: first.y, tangent: { x: first.tangent.x, y: first.tangent.y } },
-    ];
+    return {
+      samples: [
+        ...rotated,
+        { x: first.x, y: first.y, tangent: { x: first.tangent.x, y: first.tangent.y } },
+      ],
+      cornerFlags: [...rotatedFlags, rotatedFlags[0]],
+    };
   }
 
   private chooseClosedPathSeam(samples: readonly TangentSample[]): number {
@@ -93,6 +111,27 @@ export class SvgContourRenderer {
 
 function rotateSamples(samples: readonly TangentSample[], startIndex: number): TangentSample[] {
   return samples.slice(startIndex).concat(samples.slice(0, startIndex));
+}
+
+function rotateValues<TValue>(values: readonly TValue[], startIndex: number): TValue[] {
+  return values.slice(startIndex).concat(values.slice(0, startIndex));
+}
+
+function buildCornerFlags(samples: readonly TangentSample[], closed: boolean): boolean[] {
+  if (samples.length < 3) {
+    return samples.map(() => false);
+  }
+
+  return samples.map((_, index) => {
+    if (!closed && (index === 0 || index === samples.length - 1)) {
+      return false;
+    }
+
+    const previous = samples[(index - 1 + samples.length) % samples.length];
+    const current = samples[index];
+    const next = samples[(index + 1) % samples.length];
+    return sampleTurnAngle(previous, current, next) >= CORNER_TURN_THRESHOLD;
+  });
 }
 
 function directionBetween(start: Point, end: Point): Point | null {

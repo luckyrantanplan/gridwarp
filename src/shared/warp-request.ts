@@ -1,4 +1,5 @@
 export const WARP_GEOMETRY_FORMAT = "svg-polyline-overlay/v1";
+export const MAX_SAMPLES_PER_UNIT = 10.0;
 
 export const WARP_GEOMETRY_GROUPS = {
   outerBoundary: "outer-boundary",
@@ -7,6 +8,54 @@ export const WARP_GEOMETRY_GROUPS = {
   verticalGrid: "vertical-grid",
   diagonals: "diagonals",
 } as const;
+
+export interface WarpGeometryPresentation {
+  readonly stroke: string;
+  readonly strokeWidth: number;
+  readonly strokeLineCap: string;
+  readonly strokeLineJoin: string;
+  readonly vectorEffect: string;
+  readonly opacity?: number;
+}
+
+export const WARP_GEOMETRY_PRESENTATION: Record<string, WarpGeometryPresentation> = {
+  [WARP_GEOMETRY_GROUPS.outerBoundary]: {
+    stroke: "#161616",
+    strokeWidth: 1.6,
+    strokeLineCap: "butt",
+    strokeLineJoin: "miter",
+    vectorEffect: "non-scaling-stroke",
+  },
+  [WARP_GEOMETRY_GROUPS.innerBoundary]: {
+    stroke: "#161616",
+    strokeWidth: 1.6,
+    strokeLineCap: "butt",
+    strokeLineJoin: "miter",
+    vectorEffect: "non-scaling-stroke",
+  },
+  [WARP_GEOMETRY_GROUPS.horizontalGrid]: {
+    stroke: "#d4372f",
+    strokeWidth: 2.2,
+    strokeLineCap: "butt",
+    strokeLineJoin: "miter",
+    vectorEffect: "non-scaling-stroke",
+  },
+  [WARP_GEOMETRY_GROUPS.verticalGrid]: {
+    stroke: "#148a45",
+    strokeWidth: 2.2,
+    strokeLineCap: "butt",
+    strokeLineJoin: "miter",
+    vectorEffect: "non-scaling-stroke",
+  },
+  [WARP_GEOMETRY_GROUPS.diagonals]: {
+    stroke: "#161616",
+    strokeWidth: 1.6,
+    strokeLineCap: "butt",
+    strokeLineJoin: "miter",
+    vectorEffect: "non-scaling-stroke",
+    opacity: 0.55,
+  },
+};
 
 export interface WarpGeometry {
   readonly format: typeof WARP_GEOMETRY_FORMAT;
@@ -18,7 +67,7 @@ export interface WarpRequest {
   readonly renderWidth: number;
   readonly renderHeight: number;
   readonly time: number;
-  readonly sampleGridSize: number;
+  readonly samplesPerUnit: number;
   readonly gain: number;
   readonly plateau: number;
 }
@@ -49,7 +98,7 @@ export function validateWarpRequest(value: unknown): WarpRequest {
   const renderWidth = validatePositiveFiniteNumber(value.renderWidth, "renderWidth");
   const renderHeight = validatePositiveFiniteNumber(value.renderHeight, "renderHeight");
   const time = validateFiniteNumber(value.time, "time");
-  const sampleGridSize = validatePositiveInteger(value.sampleGridSize, "sampleGridSize");
+  const samplesPerUnit = validateSamplesPerUnit(value.samplesPerUnit);
   const gain = validatePositiveFiniteNumber(value.gain, "gain");
   const plateau = validatePositiveFiniteNumber(value.plateau, "plateau");
 
@@ -58,7 +107,7 @@ export function validateWarpRequest(value: unknown): WarpRequest {
     renderWidth,
     renderHeight,
     time,
-    sampleGridSize,
+    samplesPerUnit,
     gain,
     plateau,
   };
@@ -98,12 +147,12 @@ function validateFiniteNumber(value: unknown, fieldName: string): number {
   return value;
 }
 
-function validatePositiveInteger(value: unknown, fieldName: string): number {
-  const numericValue = validateFiniteNumber(value, fieldName);
-  if (!Number.isInteger(numericValue) || numericValue <= 0) {
-    throw new WarpRequestError(`${fieldName} must be a positive integer.`);
+function validateSamplesPerUnit(value: unknown): number {
+  const samplesPerUnit = validatePositiveFiniteNumber(value, "samplesPerUnit");
+  if (samplesPerUnit > MAX_SAMPLES_PER_UNIT) {
+    throw new WarpRequestError(`samplesPerUnit must be less than or equal to ${String(MAX_SAMPLES_PER_UNIT)}.`);
   }
-  return numericValue;
+  return samplesPerUnit;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

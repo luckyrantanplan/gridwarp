@@ -5,9 +5,12 @@ import { BicubicGridSampler } from "../src/lib/bicubic-grid-sampler.js";
 import { mapPlotPoint, sampleTransferCurve, transferCurvePathData } from "../src/client/transfer-curve.js";
 import { createDirectionGrid } from "../src/lib/direction-grid.js";
 import { PolygonShape } from "../src/lib/polygon-shape.js";
+import { resolveRegularGridSpec } from "../src/lib/regular-grid.js";
+import { SvgContourRenderer } from "../src/render/svg-contour-renderer.js";
 import { AngleDirectedSurfaceWarpField } from "../src/lib/scalar-surface-warp-field.js";
 import { createPolygonScalarGrid, createScalarGrid, scalarGridIndex } from "../src/lib/scalar-grid.js";
 import { satur } from "../src/lib/saturation.js";
+import type { TangentSample } from "../src/render/types.js";
 import type { Point2 } from "../src/lib/polygon-geometry.js";
 
 const DEFAULT_EPSILON = 1.0e-9;
@@ -77,6 +80,19 @@ void test("BicubicGridSampler reproduces scalar grid knots", () => {
   }
 });
 
+void test("resolveRegularGridSpec converts samples-per-unit into rectangular inclusive endpoints", () => {
+  const spec = resolveRegularGridSpec({ minX: -60.0, minY: -45.0, maxX: 60.0, maxY: 45.0 }, { samplesPerUnit: 10.0 });
+
+  assert.deepEqual(spec, {
+    minX: -60.0,
+    minY: -45.0,
+    maxX: 60.0,
+    maxY: 45.0,
+    columns: 1201,
+    rows: 901,
+  });
+});
+
 void test("BicubicGridSampler has matching first derivatives across interior cell boundaries", () => {
   const grid = createScalarGrid({ columns: 7, rows: 7, minX: 0.0, minY: 0.0, maxX: 6.0, maxY: 6.0 });
 
@@ -99,9 +115,7 @@ void test("BicubicGridSampler has matching first derivatives across interior cel
 });
 
 void test("createDirectionGrid stores unit complex directions and the bicubic sampler interpolates them", () => {
-  const directionGrid = createDirectionGrid({ minX: -2.0, minY: -2.0, maxX: 2.0, maxY: 2.0 }, {
-    columns: 5,
-    rows: 5,
+  const directionGrid = createDirectionGrid({ minX: -2.0, minY: -2.0, maxX: 2.0, maxY: 2.0, columns: 5, rows: 5 }, {
     angleOffset: 0.0,
   });
   const sampler = new BicubicGridSampler(directionGrid);
@@ -113,7 +127,12 @@ void test("createDirectionGrid stores unit complex directions and the bicubic sa
 
 void test("createPolygonScalarGrid keeps the stubbed positive noise behavior", () => {
   const shape = new PolygonShape(squarePoints(2.0));
-  const grid = createPolygonScalarGrid(shape, { columns: 9, rows: 9, padding: 0.0, gain: 1.0, plateau: 1.0 });
+  const grid = createPolygonScalarGrid(shape, {
+    worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 },
+    samplesPerUnit: 4.0,
+    gain: 1.0,
+    plateau: 1.0,
+  });
   const centerIndex = scalarGridIndex(grid, 4, 4);
 
   assert.ok(grid.values[centerIndex] > 0.0);
@@ -122,8 +141,8 @@ void test("createPolygonScalarGrid keeps the stubbed positive noise behavior", (
 
 void test("createPolygonScalarGrid uses gain to scale the pre-clamp field", () => {
   const shape = new PolygonShape(squarePoints(2.0));
-  const lowGainGrid = createPolygonScalarGrid(shape, { columns: 9, rows: 9, padding: 0.0, gain: 0.5, plateau: 1.0 });
-  const highGainGrid = createPolygonScalarGrid(shape, { columns: 9, rows: 9, padding: 0.0, gain: 1.0, plateau: 1.0 });
+  const lowGainGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 0.5, plateau: 1.0 });
+  const highGainGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 1.0, plateau: 1.0 });
   const centerIndex = scalarGridIndex(lowGainGrid, 4, 4);
 
   approximatelyEqual(lowGainGrid.values[centerIndex], satur(0.35 * 0.5, 1.0), DEFAULT_EPSILON);
@@ -133,8 +152,8 @@ void test("createPolygonScalarGrid uses gain to scale the pre-clamp field", () =
 
 void test("createPolygonScalarGrid uses plateau as the clamp threshold", () => {
   const shape = new PolygonShape(squarePoints(2.0));
-  const lowPlateauGrid = createPolygonScalarGrid(shape, { columns: 9, rows: 9, padding: 0.0, gain: 4.0, plateau: 0.5 });
-  const highPlateauGrid = createPolygonScalarGrid(shape, { columns: 9, rows: 9, padding: 0.0, gain: 4.0, plateau: 1.5 });
+  const lowPlateauGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 4.0, plateau: 0.5 });
+  const highPlateauGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 4.0, plateau: 1.5 });
   const centerIndex = scalarGridIndex(lowPlateauGrid, 4, 4);
 
   approximatelyEqual(lowPlateauGrid.values[centerIndex], 0.5, DEFAULT_EPSILON);
@@ -152,6 +171,19 @@ void test("sampleTransferCurve follows satur(gain * x, plateau)", () => {
   approximatelyEqual(samples[2].y, satur(1.5 * 0.5, 0.75), DEFAULT_EPSILON);
 });
 
+void test("createPolygonScalarGrid resolves rectangular grids from explicit world bounds", () => {
+  const shape = new PolygonShape(squarePoints(2.0));
+  const grid = createPolygonScalarGrid(shape, {
+    worldBounds: { minX: -2.0, minY: -1.0, maxX: 2.0, maxY: 1.0 },
+    samplesPerUnit: 2.0,
+    gain: 1.0,
+    plateau: 1.0,
+  });
+
+  assert.equal(grid.spec.columns, 9);
+  assert.equal(grid.spec.rows, 5);
+});
+
 void test("transferCurvePathData maps samples into plot coordinates", () => {
   const samples = [{ x: 0.0, y: 0.0 }, { x: 1.0, y: 1.0 }];
   const bounds = { minX: 0.0, maxX: 1.0, minY: 0.0, maxY: 1.0 };
@@ -159,6 +191,24 @@ void test("transferCurvePathData maps samples into plot coordinates", () => {
 
   assert.equal(transferCurvePathData(samples, bounds, frame), "M10.00 65.00 L80.00 5.00");
   assert.deepEqual(mapPlotPoint({ x: 1.0, y: 1.0 }, bounds, frame), { x: 80.0, y: 5.0 });
+});
+
+void test("SvgContourRenderer preserves sharp polygon corners with line segments", () => {
+  const renderer = new SvgContourRenderer(1.0, 2);
+  const diagonal = 1 / Math.sqrt(2);
+  const squareSamples: TangentSample[] = [
+    { x: 0.0, y: 0.0, tangent: { x: diagonal, y: -diagonal } },
+    { x: 1.0, y: 0.0, tangent: { x: diagonal, y: diagonal } },
+    { x: 1.0, y: 1.0, tangent: { x: -diagonal, y: diagonal } },
+    { x: 0.0, y: 1.0, tangent: { x: -diagonal, y: -diagonal } },
+  ];
+
+  const pathData = renderer.createPathData({ closed: true, samples: squareSamples });
+
+  assert.match(pathData, /^M /);
+  assert.ok(pathData.includes(" L "));
+  assert.ok(!pathData.includes(" C "));
+  assert.ok(pathData.endsWith(" Z"));
 });
 
 void test("AngleDirectedSurfaceWarpField uses scalar values as complex-angle amplitudes", () => {
@@ -171,11 +221,9 @@ void test("AngleDirectedSurfaceWarpField uses scalar values as complex-angle amp
   const grid = createScalarGrid({ columns: 4, rows: 4, minX: -2.0, minY: -2.0, maxX: 2.0, maxY: 2.0 });
   grid.values.fill(1.0);
   const directionGrid = createDirectionGrid(grid.spec, {
-    columns: grid.spec.columns,
-    rows: grid.spec.rows,
     angleOffset: 0.0,
   });
-  const warp = new AngleDirectedSurfaceWarpField(100, 100, shape, new BicubicGridSampler(grid), new BicubicGridSampler(directionGrid), {
+  const warp = new AngleDirectedSurfaceWarpField(100, 100, { minX: -5.0, minY: -5.0, maxX: 5.0, maxY: 5.0 }, shape, new BicubicGridSampler(grid), new BicubicGridSampler(directionGrid), {
     finiteDifferenceEpsilon: 0.5,
     amplitudeScale: 1.0,
   });

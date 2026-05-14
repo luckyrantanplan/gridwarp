@@ -42,7 +42,7 @@ npm run coverage
 The UI currently exposes:
 
 - `Time`: scales the final warp amplitude over time
-- `Sample grid`: changes the scalar and direction grid resolution
+- `Sample density`: changes the scalar and direction grid density in world units
 - `Gain`: scales the scalar field before saturation
 - `Plateau`: controls where the `satur(...)` clamp flattens the scalar field
 - `Trace grid` and `Draw diagonals`: toggle contour and overlay rendering
@@ -88,13 +88,13 @@ test/
 
 The current render path is:
 
-1. Build the initial outer octagon, inner octagon, grid families, and diagonals in the browser through [src/client/initial-geometry.ts](src/client/initial-geometry.ts).
-2. Send that geometry SVG plus scalar parameters to `/api/warp` from [src/client/index.ts](src/client/index.ts).
-3. Parse and normalize the restricted SVG geometry on the server in [src/server/parse-geometry-svg.ts](src/server/parse-geometry-svg.ts).
-4. Build a polygon-bounded scalar amplitude grid in [src/lib/scalar-grid.ts](src/lib/scalar-grid.ts).
-5. Build a direction grid of unit-complex components in [src/lib/direction-grid.ts](src/lib/direction-grid.ts).
+1. Build the initial outer octagon, inner octagon, grid families, diagonals, and world-space `viewBox` in the browser through [src/client/initial-geometry.ts](src/client/initial-geometry.ts).
+2. Send that geometry SVG plus scalar parameters, including `samplesPerUnit`, to `/api/warp` from [src/client/index.ts](src/client/index.ts).
+3. Parse and normalize the restricted SVG geometry plus its root `viewBox` on the server in [src/server/parse-geometry-svg.ts](src/server/parse-geometry-svg.ts).
+4. Resolve world bounds plus density into rectangular grid dimensions in [src/lib/regular-grid.ts](src/lib/regular-grid.ts).
+5. Build a polygon-bounded scalar amplitude grid and aligned direction grid over that same world rectangle in [src/lib/scalar-grid.ts](src/lib/scalar-grid.ts) and [src/lib/direction-grid.ts](src/lib/direction-grid.ts).
 6. Bicubically sample both grids through [src/lib/bicubic-grid-sampler.ts](src/lib/bicubic-grid-sampler.ts).
-7. Compose amplitude and direction into a warp in [src/lib/scalar-surface-warp-field.ts](src/lib/scalar-surface-warp-field.ts).
+7. Compose amplitude and direction into a warp using explicit world bounds in [src/lib/scalar-surface-warp-field.ts](src/lib/scalar-surface-warp-field.ts).
 8. Trace arbitrary client-supplied polylines with [src/render/polyline-overlay.ts](src/render/polyline-overlay.ts), render the warped scene in [src/server/render-warp-scene.ts](src/server/render-warp-scene.ts), and replace the browser scene through [src/client/index.ts](src/client/index.ts).
 
 ## Deployment
