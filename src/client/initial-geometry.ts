@@ -7,13 +7,13 @@ import {
   type WarpGeometry,
 } from "../shared/warp-request.js";
 
-export const OUTER_OCTAGON_RADIUS = 4.0;
-export const INNER_OCTAGON_RADIUS = 2.8;
-export const WORLD_WIDTH = 24.0;
-export const WORLD_HEIGHT = 24.0;
+export const OUTER_OCTAGON_RADIUS = 200.0;
+export const INNER_OCTAGON_RADIUS = 140.0;
+export const WORLD_WIDTH = 450.0;
+export const WORLD_HEIGHT = 450.0;
 
-const GRID_LINE_DENSITY_MULTIPLIER = 4;
-const GRID_LINE_SPACING = 1 / GRID_LINE_DENSITY_MULTIPLIER;
+const GRID_LINES_PER_OUTER_RADIUS = 16;
+const GRID_LINE_SPACING = OUTER_OCTAGON_RADIUS / GRID_LINES_PER_OUTER_RADIUS;
 const GRID_LINE_OFFSET = 0.5 * GRID_LINE_SPACING;
 
 interface Point {

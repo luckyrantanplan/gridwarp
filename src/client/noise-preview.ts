@@ -1,5 +1,6 @@
 import type {
   NoiseBooleanParameterDefinition,
+  NoiseEditableParameterValues,
   NoiseNumericParameterDefinition,
   NoiseParameterDefinition,
   NoiseParameterGroup,
@@ -8,6 +9,7 @@ import type {
   NoisePreviewSchemaResponse,
   NoiseSeedParameterDefinition,
 } from "../shared/noise-preview.js";
+import type { WarpGeometry } from "../shared/warp-request.js";
 
 const PREVIEW_DEBOUNCE_MS = 160;
 
@@ -20,9 +22,17 @@ let activeRequestId = 0;
 let activeController: AbortController | null = null;
 let currentSchema: NoisePreviewSchemaResponse | null = null;
 let currentParameters: NoiseParameterValues | null = null;
+let geometryProvider: (() => WarpGeometry) | null = null;
+let parametersChangedCallback: ((parameters: NoiseEditableParameterValues) => void) | null = null;
 
-export function initializeNoisePreview(): void {
-  void initializeNoisePreviewAsync();
+export async function initializeNoisePreview(
+  nextGeometryProvider: () => WarpGeometry,
+  nextParametersChangedCallback: (parameters: NoiseEditableParameterValues) => void,
+): Promise<void> {
+  geometryProvider = nextGeometryProvider;
+  parametersChangedCallback = nextParametersChangedCallback;
+  await initializeNoisePreviewAsync();
+  parametersChangedCallback(copyParameters(getCurrentParameters()));
 }
 
 async function initializeNoisePreviewAsync(): Promise<void> {
@@ -38,11 +48,12 @@ async function initializeNoisePreviewAsync(): Promise<void> {
     currentSchema = await response.json() as NoisePreviewSchemaResponse;
     currentParameters = copyParameters(currentSchema.defaultParameters);
     rebuildControls();
-    await requestPreview();
+    await requestPreview(false);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown noise schema error";
     previewElement.textContent = message;
     statusElement.textContent = "Unavailable";
+    throw error;
   }
 }
 
@@ -74,12 +85,18 @@ function getCurrentParameters(): NoiseParameterValues {
   return currentParameters;
 }
 
+function getCurrentGeometry(): WarpGeometry {
+  if (geometryProvider === null) {
+    throw new Error("Noise preview geometry provider is not initialized.");
+  }
+  return geometryProvider();
+}
+
 function copyParameters(parameters: NoiseParameterValues): NoiseParameterValues {
   return {
-    renderWidth: parameters.renderWidth,
-    renderHeight: parameters.renderHeight,
     force: parameters.force,
     scale: parameters.scale,
+    silenceCutoffPercent: parameters.silenceCutoffPercent,
     gridSparseness: parameters.gridSparseness,
     showHeatmap: parameters.showHeatmap,
     vectorOverlayDensity: parameters.vectorOverlayDensity,
@@ -365,11 +382,11 @@ function parseNumericControlValue(
 function queuePreviewRefresh(): void {
   window.clearTimeout(previewTimeout);
   previewTimeout = window.setTimeout(() => {
-    void requestPreview();
+    void requestPreview(true);
   }, PREVIEW_DEBOUNCE_MS);
 }
 
-async function requestPreview(): Promise<void> {
+async function requestPreview(notifyParametersChanged: boolean): Promise<void> {
   const parameters = getCurrentParameters();
   activeRequestId += 1;
   const requestId = activeRequestId;
@@ -383,7 +400,7 @@ async function requestPreview(): Promise<void> {
     const response = await fetch("/api/noise/generate", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ parameters }),
+      body: JSON.stringify({ geometry: getCurrentGeometry(), parameters }),
       signal: controller.signal,
     });
 
@@ -404,6 +421,10 @@ async function requestPreview(): Promise<void> {
     if (!noiseParametersEqual(parameters, payload.parameters)) {
       currentParameters = copyParameters(payload.parameters);
       rebuildControls();
+    }
+
+    if (notifyParametersChanged) {
+      parametersChangedCallback?.(copyParameters(getCurrentParameters()));
     }
   } catch (error) {
     if (controller.signal.aborted) {
@@ -426,10 +447,9 @@ function noiseParametersEqual(
   right: NoiseParameterValues,
 ): boolean {
   return (
-    left.renderWidth === right.renderWidth &&
-    left.renderHeight === right.renderHeight &&
     left.force === right.force &&
     left.scale === right.scale &&
+    left.silenceCutoffPercent === right.silenceCutoffPercent &&
     left.gridSparseness === right.gridSparseness &&
     left.showHeatmap === right.showHeatmap &&
     left.vectorOverlayDensity === right.vectorOverlayDensity &&

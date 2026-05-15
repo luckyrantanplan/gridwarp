@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
+import { DEFAULT_PARAMETERS as DEFAULT_NOISE_PARAMETERS } from "noise_generator";
 
 import { createInitialGeometry } from "../src/client/initial-geometry.js";
 import { createAppServer } from "../src/server/server.js";
@@ -9,6 +10,24 @@ import type {
   NoisePreviewSchemaResponse,
 } from "../src/shared/noise-preview.js";
 import { WARP_GEOMETRY_FORMAT, type WarpRequest } from "../src/shared/warp-request.js";
+
+const DEFAULT_EDITABLE_NOISE_PARAMETERS = {
+  force: DEFAULT_NOISE_PARAMETERS.force,
+  scale: DEFAULT_NOISE_PARAMETERS.scale,
+  silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+  gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+  showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+  vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+  spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+  amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+  swirlDensity: DEFAULT_NOISE_PARAMETERS.swirlDensity,
+  swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+  swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+  swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+  swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+  directionNoiseMix: DEFAULT_NOISE_PARAMETERS.directionNoiseMix,
+  randomSeed: DEFAULT_NOISE_PARAMETERS.randomSeed,
+};
 
 void test("html and browser module routes are served from source", async () => {
   const server = createAppServer();
@@ -87,10 +106,9 @@ void test("noise preview endpoints return schema and server-generated SVG", asyn
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        geometry: createInitialGeometry(640, 480, true, true),
         parameters: {
           ...schemaPayload.defaultParameters,
-          renderWidth: 320,
-          renderHeight: 240,
           showHeatmap: false,
           randomSeed: "gridwarp-noise-test",
         },
@@ -101,29 +119,34 @@ void test("noise preview endpoints return schema and server-generated SVG", asyn
     const invalidPreviewResponse = await fetch(`${baseUrl}/api/noise/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ parameters: null }),
+      body: JSON.stringify({
+        geometry: createInitialGeometry(640, 480, true, true),
+        parameters: null,
+      }),
     });
     const invalidPreviewMessage = await invalidPreviewResponse.text();
 
     assert.equal(schemaResponse.status, 200);
     assert.match(schemaResponse.headers.get("content-type") ?? "", /application\/json/);
-    assert.equal(schemaPayload.defaultParameters.renderWidth, 960);
+    assert.equal("renderWidth" in schemaPayload.defaultParameters, false);
+    assert.equal("renderHeight" in schemaPayload.defaultParameters, false);
     assert.ok(schemaPayload.parameterGroups.length > 0);
     assert.ok(schemaPayload.parameterDefinitions.length > 0);
+    assert.equal("silenceCutoffPercent" in schemaPayload.defaultParameters, true);
+    assert.equal(schemaPayload.parameterDefinitions.some((definition) => definition.label === "Render Width"), false);
+    assert.equal(schemaPayload.parameterDefinitions.some((definition) => definition.label === "Render Height"), false);
 
     assert.equal(previewResponse.status, 200);
     assert.match(previewResponse.headers.get("content-type") ?? "", /application\/json/);
-    assert.equal(previewPayload.parameters.renderWidth, 320);
-    assert.equal(previewPayload.parameters.renderHeight, 240);
     assert.equal(previewPayload.parameters.showHeatmap, false);
     assert.equal(previewPayload.parameters.randomSeed, "gridwarp-noise-test");
     assert.match(previewPayload.svg, /^<svg/);
-    assert.match(previewPayload.svg, /width="320"/);
-    assert.match(previewPayload.svg, /height="240"/);
+    assert.match(previewPayload.svg, /width="8"/);
+    assert.match(previewPayload.svg, /height="8"/);
     assert.match(previewPayload.svg, /Generated displacement field/);
 
     assert.equal(invalidPreviewResponse.status, 400);
-    assert.match(invalidPreviewMessage, /parameters object/);
+    assert.match(invalidPreviewMessage, /Noise parameters must be an object/);
   } finally {
     await new Promise<void>((resolve) => {
       server.close(() => {
@@ -146,10 +169,10 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
       geometry: createInitialGeometry(640, 480, true, true),
       renderWidth: 640,
       renderHeight: 480,
-      time: 16,
       samplesPerUnit: 1.0,
       gain: 0.75,
       plateau: 0.75,
+      noiseParameters: DEFAULT_EDITABLE_NOISE_PARAMETERS,
     };
 
     const response = await fetch(`${baseUrl}/api/warp`, {
@@ -159,15 +182,20 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     });
     const payload = await response.json() as { svg: string };
 
-    const zeroTimeResponse = await fetch(`${baseUrl}/api/warp`, {
+    const zeroForceNoiseParameters = {
+      ...DEFAULT_EDITABLE_NOISE_PARAMETERS,
+      force: 0,
+    };
+
+    const zeroForceResponse = await fetch(`${baseUrl}/api/warp`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...requestBody,
-        time: 0,
+        noiseParameters: zeroForceNoiseParameters,
       }),
     });
-    const zeroTimePayload = await zeroTimeResponse.json() as { svg: string };
+    const zeroForcePayload = await zeroForceResponse.json() as { svg: string };
 
     const noGridResponse = await fetch(`${baseUrl}/api/warp`, {
       method: "POST",
@@ -210,19 +238,19 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     });
     const styledGeometryPayload = await styledGeometryResponse.json() as { svg: string };
 
-    const styledZeroTimeResponse = await fetch(`${baseUrl}/api/warp`, {
+    const styledZeroForceResponse = await fetch(`${baseUrl}/api/warp`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...requestBody,
-        time: 0,
+        noiseParameters: zeroForceNoiseParameters,
         geometry: {
           format: WARP_GEOMETRY_FORMAT,
           svg: styledGeometrySvg,
         },
       }),
     });
-    const styledZeroTimePayload = await styledZeroTimeResponse.json() as { svg: string };
+    const styledZeroForcePayload = await styledZeroForceResponse.json() as { svg: string };
 
     const invalidGeometryResponse = await fetch(`${baseUrl}/api/warp`, {
       method: "POST",
@@ -258,10 +286,10 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     assert.match(payload.svg, /data-caption="/);
     assert.ok(countSvgTag(payload.svg, "path") > countSvgTag(noGridPayload.svg, "path"));
     assert.ok(countSvgTag(payload.svg, "path") > countSvgTag(noDiagonalPayload.svg, "path"));
-    assert.equal(zeroTimeResponse.status, 200);
-    assert.ok(!zeroTimePayload.svg.includes(" C "));
+    assert.equal(zeroForceResponse.status, 200);
+    assert.ok(!zeroForcePayload.svg.includes(" C "));
     assert.equal(styledGeometryResponse.status, 200);
-    assert.equal(styledZeroTimeResponse.status, 200);
+    assert.equal(styledZeroForceResponse.status, 200);
     assert.match(styledGeometryPayload.svg, /stroke="#ff00aa"/);
     assert.match(styledGeometryPayload.svg, /stroke-width="7\.5"/);
     assert.match(styledGeometryPayload.svg, /stroke-linecap="round"/);
@@ -271,15 +299,15 @@ void test("POST /api/warp returns computed SVG and rejects invalid requests", as
     assert.match(styledGeometryPayload.svg, /stroke-width="4\.5"/);
     assert.match(styledGeometryPayload.svg, /stroke-linecap="square"/);
     assert.match(styledGeometryPayload.svg, /stroke-linejoin="round"/);
-    assert.match(styledZeroTimePayload.svg, /stroke="#ff00aa"/);
-    assert.match(styledZeroTimePayload.svg, /stroke-width="7\.5"/);
-    assert.match(styledZeroTimePayload.svg, /stroke-linecap="round"/);
-    assert.match(styledZeroTimePayload.svg, /stroke-linejoin="bevel"/);
-    assert.match(styledZeroTimePayload.svg, /opacity="0\.42"/);
-    assert.match(styledZeroTimePayload.svg, /stroke="#102030"/);
-    assert.match(styledZeroTimePayload.svg, /stroke-width="4\.5"/);
-    assert.match(styledZeroTimePayload.svg, /stroke-linecap="square"/);
-    assert.match(styledZeroTimePayload.svg, /stroke-linejoin="round"/);
+    assert.match(styledZeroForcePayload.svg, /stroke="#ff00aa"/);
+    assert.match(styledZeroForcePayload.svg, /stroke-width="7\.5"/);
+    assert.match(styledZeroForcePayload.svg, /stroke-linecap="round"/);
+    assert.match(styledZeroForcePayload.svg, /stroke-linejoin="bevel"/);
+    assert.match(styledZeroForcePayload.svg, /opacity="0\.42"/);
+    assert.match(styledZeroForcePayload.svg, /stroke="#102030"/);
+    assert.match(styledZeroForcePayload.svg, /stroke-width="4\.5"/);
+    assert.match(styledZeroForcePayload.svg, /stroke-linecap="square"/);
+    assert.match(styledZeroForcePayload.svg, /stroke-linejoin="round"/);
 
     assert.equal(noGridResponse.status, 200);
     assert.equal(noDiagonalResponse.status, 200);

@@ -8,13 +8,13 @@ import {
 import { initializeNoisePreview } from "./noise-preview.js";
 import { createInitialGeometry } from "./initial-geometry.js";
 import { satur } from "../lib/saturation.js";
-import type { WarpRequest, WarpResponse } from "../shared/warp-request.js";
+import type { WarpGeometry, WarpRequest, WarpResponse } from "../shared/warp-request.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SCALAR_CONTROL_DECIMALS = 2;
-const VIEWPORT_MIN_SCALE = 0.15;
 const VIEWPORT_MAX_SCALE = 6.0;
 const VIEWPORT_MARGIN_FACTOR = 0.75;
+const VIEWBOX_PRECISION = 12;
 const TRANSFER_PLOT_SAMPLE_COUNT = 48;
 const TRANSFER_PLOT_LABEL_MARGIN = 8;
 const TRANSFER_PLOT_RIGHT_LABEL_THRESHOLD = 44;
@@ -39,6 +39,24 @@ interface StageSize {
   readonly height: number;
 }
 
+interface EditableNoiseParameters {
+  readonly force: number;
+  readonly scale: number;
+  readonly silenceCutoffPercent: number;
+  readonly gridSparseness: number;
+  readonly showHeatmap: boolean;
+  readonly vectorOverlayDensity: number;
+  readonly spectralSlopeDbPerOct: number;
+  readonly amplitudeContrast: number;
+  readonly swirlDensity: number;
+  readonly swirlMinimumAngleDegrees: number;
+  readonly swirlStrengthPercent: number;
+  readonly swirlFalloff: number;
+  readonly swirlDirectionBias: number;
+  readonly directionNoiseMix: number;
+  readonly randomSeed: string;
+}
+
 interface PanState {
   readonly pointerId: number;
   readonly clientX: number;
@@ -49,9 +67,6 @@ interface PanState {
 const scene = getRequiredElement("scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const sourceScene = getRequiredElement("source-scene", (element): element is SVGSVGElement => element instanceof SVGSVGElement);
 const caption = getRequiredElement("caption", (element): element is HTMLDivElement => element instanceof HTMLDivElement);
-const timeSlider = getRequiredElement("time-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
-const timeInput = getRequiredElement("time-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
-const timeValue = getRequiredElement("time-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
 const sampleDensitySlider = getRequiredElement("sample-density-slider", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const sampleDensityInput = getRequiredElement("sample-density-input", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const sampleDensityValue = getRequiredElement("sample-density-value", (element): element is HTMLOutputElement => element instanceof HTMLOutputElement);
@@ -68,8 +83,6 @@ const gridEnabled = getRequiredElement("grid-enabled", (element): element is HTM
 const diagonalsEnabled = getRequiredElement("diagonals-enabled", (element): element is HTMLInputElement => element instanceof HTMLInputElement);
 const stage = getRequiredParentElement(scene);
 const sourceFrame = getRequiredParentElement(sourceScene);
-const minTime = Number(timeSlider.min);
-const maxTime = Number(timeSlider.max);
 const minSampleDensity = Number(sampleDensitySlider.min);
 const maxSampleDensity = Number(sampleDensitySlider.max);
 const minGain = Number(gainSlider.min);
@@ -77,10 +90,10 @@ const maxGain = Number(gainSlider.max);
 const minPlateau = Number(plateauSlider.min);
 const maxPlateau = Number(plateauSlider.max);
 
-let currentTime = Number(timeInput.value);
 let currentSampleDensity = Number(sampleDensityInput.value);
 let currentGain = Number(gainInput.value);
 let currentPlateau = Number(plateauInput.value);
+let currentNoiseParameters: EditableNoiseParameters | null = null;
 let stageSize: StageSize = { width: 0, height: 0 };
 let sceneViewport: SceneViewport = createDefaultSceneViewport(1, 1);
 let viewportMode: "default" | "custom" = "default";
@@ -140,8 +153,8 @@ function scaleViewportToStage(viewport: SceneViewport, fromStage: StageSize, toS
 }
 
 function constrainViewport(viewport: SceneViewport, defaultViewport: SceneViewport): SceneViewport {
-  const width = clamp(viewport.width, defaultViewport.width * VIEWPORT_MIN_SCALE, defaultViewport.width * VIEWPORT_MAX_SCALE);
-  const height = clamp(viewport.height, defaultViewport.height * VIEWPORT_MIN_SCALE, defaultViewport.height * VIEWPORT_MAX_SCALE);
+  const width = Math.min(viewport.width, defaultViewport.width * VIEWPORT_MAX_SCALE);
+  const height = Math.min(viewport.height, defaultViewport.height * VIEWPORT_MAX_SCALE);
   const marginX = defaultViewport.width * VIEWPORT_MARGIN_FACTOR;
   const marginY = defaultViewport.height * VIEWPORT_MARGIN_FACTOR;
   const minX = defaultViewport.x - marginX;
@@ -188,21 +201,24 @@ function resetViewport(): void {
   applySceneViewBox();
 }
 
-function scenePointFromClient(clientX: number, clientY: number): Point {
-  return viewportPointFromClient(scene, sceneViewport, clientX, clientY);
-}
-
-function sourcePointFromClient(clientX: number, clientY: number): Point {
-  return viewportPointFromClient(sourceScene, sourceViewport, clientX, clientY);
-}
-
-function viewportPointFromClient(target: SVGSVGElement, viewport: SceneViewport, clientX: number, clientY: number): Point {
-  const rect = target.getBoundingClientRect();
-  const normalizedX = rect.width > 0 ? (clientX - rect.left) / rect.width : 0.5;
-  const normalizedY = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
+function viewportCenter(viewport: SceneViewport): Point {
   return {
-    x: viewport.x + normalizedX * viewport.width,
-    y: viewport.y + normalizedY * viewport.height,
+    x: viewport.x + 0.5 * viewport.width,
+    y: viewport.y + 0.5 * viewport.height,
+  };
+}
+
+function zoomViewport(viewport: SceneViewport, zoomFactor: number, anchor: Point): SceneViewport {
+  const nextWidth = viewport.width * zoomFactor;
+  const nextHeight = viewport.height * zoomFactor;
+  const anchorRatioX = viewport.width > 0.0 ? (anchor.x - viewport.x) / viewport.width : 0.5;
+  const anchorRatioY = viewport.height > 0.0 ? (anchor.y - viewport.y) / viewport.height : 0.5;
+
+  return {
+    x: anchor.x - anchorRatioX * nextWidth,
+    y: anchor.y - anchorRatioY * nextHeight,
+    width: nextWidth,
+    height: nextHeight,
   };
 }
 
@@ -217,8 +233,12 @@ function applySourceViewBox(): void {
 function applyViewBox(target: SVGSVGElement, viewport: SceneViewport): void {
   target.setAttribute(
     "viewBox",
-    `${viewport.x.toFixed(2)} ${viewport.y.toFixed(2)} ${viewport.width.toFixed(2)} ${viewport.height.toFixed(2)}`,
+    `${formatViewBoxNumber(viewport.x)} ${formatViewBoxNumber(viewport.y)} ${formatViewBoxNumber(viewport.width)} ${formatViewBoxNumber(viewport.height)}`,
   );
+}
+
+function formatViewBoxNumber(value: number): string {
+  return Number(value.toPrecision(VIEWBOX_PRECISION)).toString();
 }
 
 function setSourceViewport(nextViewport: SceneViewport, mode: "default" | "custom"): void {
@@ -352,13 +372,6 @@ function createSvgPath(pathData: string, stroke: string, strokeWidth: number): S
   return path;
 }
 
-function syncTimeControls(): void {
-  const formattedTime = currentTime.toFixed(1);
-  timeSlider.value = formattedTime;
-  timeInput.value = formattedTime;
-  timeValue.textContent = formattedTime;
-}
-
 function syncScalarControls(): void {
   const formattedSampleDensity = currentSampleDensity.toFixed(SCALAR_CONTROL_DECIMALS);
   const formattedGain = currentGain.toFixed(SCALAR_CONTROL_DECIMALS);
@@ -372,16 +385,6 @@ function syncScalarControls(): void {
   plateauSlider.value = formattedPlateau;
   plateauInput.value = formattedPlateau;
   plateauValue.textContent = formattedPlateau;
-}
-
-function setCurrentTime(nextTime: number): void {
-  if (!Number.isFinite(nextTime)) {
-    syncTimeControls();
-    return;
-  }
-  currentTime = clamp(nextTime, minTime, maxTime);
-  syncTimeControls();
-  void requestScene();
 }
 
 function setCurrentSampleDensity(nextSampleDensity: number): void {
@@ -417,15 +420,6 @@ function setCurrentPlateau(nextPlateau: number): void {
   void requestScene();
 }
 
-function commitTimeInputValue(): void {
-  const rawValue = timeInput.value.trim();
-  if (rawValue === "") {
-    syncTimeControls();
-    return;
-  }
-  setCurrentTime(Number(rawValue));
-}
-
 function commitSampleDensityInputValue(): void {
   const rawValue = sampleDensityInput.value.trim();
   if (rawValue === "") {
@@ -459,17 +453,20 @@ async function requestScene(): Promise<void> {
   syncViewportWithStage(width, height);
   applySceneViewBox();
 
-  const geometry = createInitialGeometry(width, height, gridEnabled.checked, diagonalsEnabled.checked);
+  const geometry = createCurrentGeometry(width, height);
   applySourceSvg(geometry.svg);
+  if (currentNoiseParameters === null) {
+    return;
+  }
 
   const requestPayload: WarpRequest = {
     geometry,
     renderWidth: width,
     renderHeight: height,
-    time: currentTime,
     samplesPerUnit: currentSampleDensity,
     gain: currentGain,
     plateau: currentPlateau,
+    noiseParameters: currentNoiseParameters,
   };
 
   activeRequestId += 1;
@@ -510,6 +507,14 @@ async function requestScene(): Promise<void> {
       activeController = null;
     }
   }
+}
+
+function createCurrentGeometry(renderWidth: number, renderHeight: number): WarpGeometry {
+  return createInitialGeometry(renderWidth, renderHeight, gridEnabled.checked, diagonalsEnabled.checked);
+}
+
+function createCurrentStageGeometry(): WarpGeometry {
+  return createCurrentGeometry(Math.max(stage.clientWidth, 1), Math.max(stage.clientHeight, 1));
 }
 
 function applySourceSvg(svgMarkup: string): void {
@@ -555,22 +560,6 @@ function replaceSvgChildren(target: SVGSVGElement, source: SVGSVGElement): void 
   const importedChildren = Array.from(source.childNodes, (child) => document.importNode(child, true));
   target.replaceChildren(...importedChildren);
 }
-
-timeSlider.addEventListener("input", () => {
-  setCurrentTime(Number(timeSlider.value));
-});
-
-timeInput.addEventListener("change", () => {
-  commitTimeInputValue();
-});
-
-timeInput.addEventListener("keydown", (event: KeyboardEvent) => {
-  if (event.key !== "Enter") {
-    return;
-  }
-  event.preventDefault();
-  commitTimeInputValue();
-});
 
 sampleDensitySlider.addEventListener("input", () => {
   setCurrentSampleDensity(Number(sampleDensitySlider.value));
@@ -641,35 +630,15 @@ scene.addEventListener("wheel", (event: WheelEvent) => {
   if (stageSize.width <= 0 || stageSize.height <= 0) {
     return;
   }
-  const anchor = scenePointFromClient(event.clientX, event.clientY);
   const zoomFactor = Math.exp(event.deltaY * 0.0015);
-  const nextWidth = sceneViewport.width * zoomFactor;
-  const nextHeight = sceneViewport.height * zoomFactor;
-  const anchorRatioX = sceneViewport.width > 0.0 ? (anchor.x - sceneViewport.x) / sceneViewport.width : 0.5;
-  const anchorRatioY = sceneViewport.height > 0.0 ? (anchor.y - sceneViewport.y) / sceneViewport.height : 0.5;
-  setViewport({
-    x: anchor.x - anchorRatioX * nextWidth,
-    y: anchor.y - anchorRatioY * nextHeight,
-    width: nextWidth,
-    height: nextHeight,
-  }, "custom");
+  setViewport(zoomViewport(sceneViewport, zoomFactor, viewportCenter(sceneViewport)), "custom");
   applySceneViewBox();
 }, { passive: false });
 
 sourceScene.addEventListener("wheel", (event: WheelEvent) => {
   event.preventDefault();
-  const anchor = sourcePointFromClient(event.clientX, event.clientY);
   const zoomFactor = Math.exp(event.deltaY * 0.0015);
-  const nextWidth = sourceViewport.width * zoomFactor;
-  const nextHeight = sourceViewport.height * zoomFactor;
-  const anchorRatioX = sourceViewport.width > 0.0 ? (anchor.x - sourceViewport.x) / sourceViewport.width : 0.5;
-  const anchorRatioY = sourceViewport.height > 0.0 ? (anchor.y - sourceViewport.y) / sourceViewport.height : 0.5;
-  setSourceViewport({
-    x: anchor.x - anchorRatioX * nextWidth,
-    y: anchor.y - anchorRatioY * nextHeight,
-    width: nextWidth,
-    height: nextHeight,
-  }, "custom");
+  setSourceViewport(zoomViewport(sourceViewport, zoomFactor, viewportCenter(sourceViewport)), "custom");
 }, { passive: false });
 
 scene.addEventListener("pointerdown", (event: PointerEvent) => {
@@ -782,16 +751,22 @@ const resizeObserver = new ResizeObserver(() => {
 });
 
 resizeObserver.observe(stage);
-initializeNoisePreview();
-syncTimeControls();
-syncScalarControls();
-renderTransferPlot();
-void requestScene();
+void initializeApplication();
 
 window.addEventListener("beforeunload", () => {
   resizeObserver.disconnect();
   activeController?.abort();
 });
+
+async function initializeApplication(): Promise<void> {
+  await initializeNoisePreview(createCurrentStageGeometry, (nextParameters: EditableNoiseParameters) => {
+    currentNoiseParameters = nextParameters;
+    void requestScene();
+  });
+  syncScalarControls();
+  renderTransferPlot();
+  await requestScene();
+}
 
 interface Point {
   readonly x: number;

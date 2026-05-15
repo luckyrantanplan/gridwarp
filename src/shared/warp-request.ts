@@ -1,3 +1,6 @@
+import type { NoiseEditableParameterValues } from "./noise-parameters.js";
+import { validateNoiseEditableParameters } from "./noise-parameters.js";
+
 export const WARP_GEOMETRY_FORMAT = "svg-polyline-overlay/v1";
 export const MAX_SAMPLES_PER_UNIT = 10.0;
 
@@ -66,10 +69,10 @@ export interface WarpRequest {
   readonly geometry: WarpGeometry;
   readonly renderWidth: number;
   readonly renderHeight: number;
-  readonly time: number;
   readonly samplesPerUnit: number;
   readonly gain: number;
   readonly plateau: number;
+  readonly noiseParameters: NoiseEditableParameterValues;
 }
 
 export interface WarpResponse {
@@ -94,26 +97,26 @@ export function validateWarpRequest(value: unknown): WarpRequest {
     throw new Error("Request body must be a JSON object.");
   }
 
-  const geometry = validateGeometry(value.geometry);
+  const geometry = validateWarpGeometry(value.geometry);
   const renderWidth = validatePositiveFiniteNumber(value.renderWidth, "renderWidth");
   const renderHeight = validatePositiveFiniteNumber(value.renderHeight, "renderHeight");
-  const time = validateFiniteNumber(value.time, "time");
   const samplesPerUnit = validateSamplesPerUnit(value.samplesPerUnit);
   const gain = validatePositiveFiniteNumber(value.gain, "gain");
   const plateau = validatePositiveFiniteNumber(value.plateau, "plateau");
+  const noiseParameters = validateWarpNoiseParameters(value.noiseParameters);
 
   return {
     geometry,
     renderWidth,
     renderHeight,
-    time,
     samplesPerUnit,
     gain,
     plateau,
+    noiseParameters,
   };
 }
 
-function validateGeometry(value: unknown): WarpGeometry {
+export function validateWarpGeometry(value: unknown): WarpGeometry {
   if (!isRecord(value)) {
     throw new WarpRequestError("geometry must be an object.");
   }
@@ -153,6 +156,15 @@ function validateSamplesPerUnit(value: unknown): number {
     throw new WarpRequestError(`samplesPerUnit must be less than or equal to ${String(MAX_SAMPLES_PER_UNIT)}.`);
   }
   return samplesPerUnit;
+}
+
+function validateWarpNoiseParameters(value: unknown): NoiseEditableParameterValues {
+  try {
+    return validateNoiseEditableParameters(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "noiseParameters are invalid.";
+    throw new WarpRequestError(message);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

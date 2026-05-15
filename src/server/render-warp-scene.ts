@@ -4,25 +4,23 @@ import { segmentsFromVertices, traceWarpedPolylineOverlayGroups, type WarpedPoly
 import { SvgContourRenderer } from "../render/svg-contour-renderer.js";
 import type { Cell, Point, TracedComponent, WarpField } from "../render/types.js";
 import { BicubicGridSampler } from "../lib/bicubic-grid-sampler.js";
-import { createDirectionGrid } from "../lib/direction-grid.js";
 import { PolygonShape, type BoundingBox } from "../lib/polygon-shape.js";
 import { resolveRegularGridSpec, type RegularGridSpec } from "../lib/regular-grid.js";
 import { AngleDirectedSurfaceWarpField } from "../lib/scalar-surface-warp-field.js";
-import { countNonZeroSamples, createPolygonScalarGrid } from "../lib/scalar-grid.js";
+import { countNonZeroSamples } from "../lib/scalar-grid.js";
 import {
   createWorldScreenTransform,
   screenPointFromWorld,
   type WorldScreenTransform,
 } from "../lib/world-screen-transform.js";
+import { createNoiseWarpSurfaces } from "./noise-field-adapter.js";
 import { WarpRequestError, type WarpGeometryPresentation, type WarpRequest } from "../shared/warp-request.js";
 import type { ParsedWarpGeometry } from "./parse-geometry-svg.js";
 
 const SURFACE_WARP_JACOBIAN_EPSILON = 0.75;
-const SURFACE_WARP_REFERENCE_TIME = 16.0;
-const SURFACE_WARP_AMPLITUDE = 1.0;
-const SURFACE_WARP_ANGLE_OFFSET = 22.0 * Math.PI / 180.0;
+const SURFACE_WARP_AMPLITUDE_SCALE = 1.0;
 const PATH_DECIMALS = 2;
-const MAX_GRID_KNOTS = 2_000_000;
+const MAX_GRID_KNOTS = 20_000_000;
 
 const leafCellSettings: LeafCellCollectorSettings = {
   maxContourCellSize: 8,
@@ -56,17 +54,16 @@ export function renderWarpScene(request: WarpRequest, geometry: ParsedWarpGeomet
   const outerBoundaryShape = new PolygonShape(geometry.outerBoundary);
   const resolvedGridSpec = resolveRegularGridSpec(geometry.worldBounds, { samplesPerUnit: request.samplesPerUnit });
   ensureGridFitsBudget(resolvedGridSpec);
-  const scalarGrid = createPolygonScalarGrid(outerBoundaryShape, {
-    worldBounds: geometry.worldBounds,
-    samplesPerUnit: request.samplesPerUnit,
-    gain: request.gain,
-    plateau: request.plateau,
-  });
-  const amplitudeSurface = new BicubicGridSampler(scalarGrid);
-  const directionSurface = new BicubicGridSampler(createDirectionGrid(resolvedGridSpec, {
-    angleOffset: SURFACE_WARP_ANGLE_OFFSET,
-  }));
-  const amplitudeScale = SURFACE_WARP_AMPLITUDE * Math.max(request.time / SURFACE_WARP_REFERENCE_TIME, 0.0);
+  const noiseSurfaces = createNoiseWarpSurfaces(
+    outerBoundaryShape,
+    geometry.worldBounds,
+    request.samplesPerUnit,
+    request.gain,
+    request.plateau,
+    request.noiseParameters,
+  );
+  const amplitudeSurface = new BicubicGridSampler(noiseSurfaces.amplitudeGrid);
+  const directionSurface = new BicubicGridSampler(noiseSurfaces.directionGrid);
   const warp = new AngleDirectedSurfaceWarpField(
     request.renderWidth,
     request.renderHeight,
@@ -76,7 +73,7 @@ export function renderWarpScene(request: WarpRequest, geometry: ParsedWarpGeomet
     directionSurface,
     {
       finiteDifferenceEpsilon: SURFACE_WARP_JACOBIAN_EPSILON,
-      amplitudeScale,
+      amplitudeScale: SURFACE_WARP_AMPLITUDE_SCALE,
     },
   );
   const leafCells = new LeafCellCollector(
@@ -85,7 +82,7 @@ export function renderWarpScene(request: WarpRequest, geometry: ParsedWarpGeomet
     warp,
     leafCellSettings,
   ).collect();
-  const renderIdentityShapes = amplitudeScale <= 0.0;
+  const renderIdentityShapes = noiseSurfaces.activeSampleCount === 0;
 
   const parts: string[] = [];
   parts.push(renderShapeSetMarkup(geometry.horizontalGrid, geometry.horizontalGridStyle, request, geometry, warp, leafCells, renderIdentityShapes));
@@ -94,14 +91,14 @@ export function renderWarpScene(request: WarpRequest, geometry: ParsedWarpGeomet
   parts.push(renderShapeSetMarkup(geometry.innerBoundary, geometry.innerBoundaryStyle, request, geometry, warp, leafCells, renderIdentityShapes));
   parts.push(renderShapeSetMarkup(geometry.diagonals, geometry.diagonalsStyle, request, geometry, warp, leafCells, renderIdentityShapes));
 
-  const activeSampleCount = String(countNonZeroSamples(scalarGrid));
+  const activeSampleCount = String(countNonZeroSamples(noiseSurfaces.amplitudeGrid));
   const leafCellCount = String(leafCells.length);
   const smallestCell = smallestLeafCellSize(leafCells, leafCellSettings.maxContourCellSize).toFixed(1);
   const gridLabel = formatGridLabel(geometry.horizontalGrid.length, geometry.verticalGrid.length);
   const resolutionLabel = formatResolutionLabel(request.samplesPerUnit, resolvedGridSpec.columns, resolvedGridSpec.rows);
   const caption = request.renderWidth < 720
-    ? compactCaption(request.time, resolutionLabel, activeSampleCount, gridLabel, leafCellCount, smallestCell)
-    : fullCaption(request.time, resolutionLabel, activeSampleCount, gridLabel, leafCellCount, smallestCell);
+    ? compactCaption(request.noiseParameters.force, resolutionLabel, activeSampleCount, gridLabel, leafCellCount, smallestCell)
+    : fullCaption(request.noiseParameters.force, resolutionLabel, activeSampleCount, gridLabel, leafCellCount, smallestCell);
 
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${escapeAttribute(String(request.renderWidth))}" height="${escapeAttribute(String(request.renderHeight))}" viewBox="0 0 ${escapeAttribute(String(request.renderWidth))} ${escapeAttribute(String(request.renderHeight))}" aria-label="Scalar warp grid demo" data-caption="${escapeAttribute(caption)}">`,
@@ -273,25 +270,25 @@ function withOpacity(presentation: WarpGeometryPresentation, opacity: number | u
 }
 
 function compactCaption(
-  time: number,
+  force: number,
   resolutionLabel: string,
   activeSampleCount: string,
   gridLabel: string,
   leafCellCount: string,
   smallestCell: string,
 ): string {
-  return `t=${time.toFixed(1)} · ${resolutionLabel} · ${activeSampleCount} active · ${gridLabel} · ${leafCellCount} cells · min ${smallestCell}px`;
+  return `force=${force.toFixed(1)} · ${resolutionLabel} · ${activeSampleCount} active · ${gridLabel} · ${leafCellCount} cells · min ${smallestCell}px`;
 }
 
 function fullCaption(
-  time: number,
+  force: number,
   resolutionLabel: string,
   activeSampleCount: string,
   gridLabel: string,
   leafCellCount: string,
   smallestCell: string,
 ): string {
-  return `C1 scalar-amplitude warp at t=${time.toFixed(1)} · ${resolutionLabel} · ${activeSampleCount} active samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
+  return `C1 scalar-amplitude warp at force=${force.toFixed(1)} · ${resolutionLabel} · ${activeSampleCount} active samples · ${gridLabel} · ${leafCellCount} leaf cells, smallest ${smallestCell}px`;
 }
 
 function formatResolutionLabel(samplesPerUnit: number, columns: number, rows: number): string {

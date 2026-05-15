@@ -44,8 +44,56 @@ The UI currently exposes:
 - `Time`: scales the final warp amplitude over time
 - `Sample density`: changes the scalar and direction grid density in world units
 - `Gain`: scales the scalar field before saturation
-- `Plateau`: controls where the `satur(...)` clamp flattens the scalar field
+- `Plateau`: normalized fraction of polygon interior depth used to cap the shaped scalar field
 - `Trace grid` and `Draw diagonals`: toggle contour and overlay rendering
+
+## Warp Strength Calculation
+
+The raw noise field enters the warp as a sampled displacement vector
+
+$$
+\mathbf{d}_{noise}(p) = (dx(p), dy(p))
+$$
+
+sampled from the `noise_generator` field in [src/server/noise-field-adapter.ts](src/server/noise-field-adapter.ts). Gridwarp then splits that vector into:
+
+- a magnitude
+
+$$
+\|\mathbf{d}_{noise}(p)\| = \sqrt{dx(p)^2 + dy(p)^2}
+$$
+
+- and a direction
+
+$$
+\frac{\mathbf{d}_{noise}(p)}{\|\mathbf{d}_{noise}(p)\|}
+$$
+
+The scalar shaping step uses the polygon distance field from [src/lib/polygon-shape.ts](src/lib/polygon-shape.ts):
+
+$$
+weightedValue(p) = \frac{distance(p)}{maxInteriorDistance} \cdot \|\mathbf{d}_{noise}(p)\| \cdot gain
+$$
+
+where:
+
+- `distance(p)` is the signed distance from the point to the polygon boundary
+- `maxInteriorDistance` is `PolygonShape.max_interior_distance()`
+- `gain` is the UI gain control
+
+The planned shape-relative plateau semantics are:
+
+$$
+amplitude(p) = satur(weightedValue(p), plateau \cdot maxInteriorDistance)
+$$
+
+and the final warp vector reapplies the original noise direction:
+
+$$
+\mathbf{warp}(p) = amplitude(p) \cdot \frac{\mathbf{d}_{noise}(p)}{\|\mathbf{d}_{noise}(p)\|}
+$$
+
+This means the noise is present in the equation through both the raw magnitude and the direction, even if it is not written as a separate named variable in the UI. Under the planned semantics, `plateau` is not an absolute world-unit cap anymore: it is multiplied by `maxInteriorDistance`, so the same plateau value remains meaningful when the polygon is resized.
 
 ## Project Structure
 

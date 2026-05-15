@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DEFAULT_PARAMETERS as DEFAULT_NOISE_PARAMETERS } from "noise_generator";
 
 import { BicubicGridSampler } from "../src/lib/bicubic-grid-sampler.js";
 import { createInitialGeometry } from "../src/client/initial-geometry.js";
@@ -7,9 +8,10 @@ import { mapPlotPoint, sampleTransferCurve, transferCurvePathData } from "../src
 import { createDirectionGrid } from "../src/lib/direction-grid.js";
 import { PolygonShape } from "../src/lib/polygon-shape.js";
 import { resolveRegularGridSpec } from "../src/lib/regular-grid.js";
+import { createNoiseGeneratorParameters, createNoiseWarpSurfaces, deriveNoiseRenderSize } from "../src/server/noise-field-adapter.js";
 import { SvgContourRenderer } from "../src/render/svg-contour-renderer.js";
 import { AngleDirectedSurfaceWarpField } from "../src/lib/scalar-surface-warp-field.js";
-import { createPolygonScalarGrid, createScalarGrid, scalarGridIndex } from "../src/lib/scalar-grid.js";
+import { createScalarGrid, scalarGridIndex } from "../src/lib/scalar-grid.js";
 import { satur } from "../src/lib/saturation.js";
 import {
   createWorldScreenTransform,
@@ -99,10 +101,16 @@ void test("resolveRegularGridSpec converts samples-per-unit into rectangular inc
   });
 });
 
-void test("createInitialGeometry keeps a fixed 24 by 24 world viewBox", () => {
+void test("createInitialGeometry keeps the resized world viewBox and scales grid density with the octogon", () => {
   const geometry = createInitialGeometry(960, 320, true, true);
+  const horizontalGridMatch = geometry.svg.match(/<g id="horizontal-grid">([\s\S]*?)<\/g>/);
+  const verticalGridMatch = geometry.svg.match(/<g id="vertical-grid">([\s\S]*?)<\/g>/);
 
-  assert.match(geometry.svg, /viewBox="-12\.00 -12\.00 24\.00 24\.00"/);
+  assert.match(geometry.svg, /viewBox="-225\.00 -225\.00 450\.00 450\.00"/);
+  assert.ok(horizontalGridMatch !== null);
+  assert.ok(verticalGridMatch !== null);
+  assert.equal([...horizontalGridMatch[1].matchAll(/<polyline\b/g)].length, 36);
+  assert.equal([...verticalGridMatch[1].matchAll(/<polyline\b/g)].length, 36);
 });
 
 void test("world-screen transform preserves 1:1 scaling in rectangular renders", () => {
@@ -157,40 +165,110 @@ void test("createDirectionGrid stores unit complex directions and the bicubic sa
   approximatelyEqual(direction[1], 0.0, DEFAULT_EPSILON);
 });
 
-void test("createPolygonScalarGrid keeps the stubbed positive noise behavior", () => {
-  const shape = new PolygonShape(squarePoints(2.0));
-  const grid = createPolygonScalarGrid(shape, {
-    worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 },
-    samplesPerUnit: 4.0,
-    gain: 1.0,
-    plateau: 1.0,
+void test("deriveNoiseRenderSize rounds the outer bbox up to immutable package dimensions", () => {
+  assert.deepEqual(deriveNoiseRenderSize({ minX: 1.2, minY: -2.4, maxX: 9.1, maxY: 5.2 }), {
+    renderWidth: 8,
+    renderHeight: 8,
   });
-  const centerIndex = scalarGridIndex(grid, 4, 4);
-
-  assert.ok(grid.values[centerIndex] > 0.0);
-  assert.equal(grid.values[scalarGridIndex(grid, 0, 0)], 0.0);
 });
 
-void test("createPolygonScalarGrid uses gain to scale the pre-clamp field", () => {
-  const shape = new PolygonShape(squarePoints(2.0));
-  const lowGainGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 0.5, plateau: 1.0 });
-  const highGainGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 1.0, plateau: 1.0 });
-  const centerIndex = scalarGridIndex(lowGainGrid, 4, 4);
+void test("createNoiseGeneratorParameters merges editable values with ceil-rounded bbox size", () => {
+  const parameters = createNoiseGeneratorParameters({
+    force: 10,
+    scale: DEFAULT_NOISE_PARAMETERS.scale,
+    silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+    gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+    showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+    vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+    spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+    amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+    swirlDensity: DEFAULT_NOISE_PARAMETERS.swirlDensity,
+    swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+    swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+    swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+    swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+    directionNoiseMix: DEFAULT_NOISE_PARAMETERS.directionNoiseMix,
+    randomSeed: "adapter-test",
+  }, {
+    minX: -3.6,
+    minY: -4.2,
+    maxX: 4.2,
+    maxY: 3.1,
+  });
 
-  approximatelyEqual(lowGainGrid.values[centerIndex], satur(0.35 * 0.5, 1.0), DEFAULT_EPSILON);
-  approximatelyEqual(highGainGrid.values[centerIndex], satur(0.35 * 1.0, 1.0), DEFAULT_EPSILON);
-  assert.ok(highGainGrid.values[centerIndex] > lowGainGrid.values[centerIndex]);
+  assert.equal(parameters.renderWidth, 8);
+  assert.equal(parameters.renderHeight, 8);
+  assert.equal(parameters.force, 10);
+  assert.equal(parameters.silenceCutoffPercent, DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent);
+  assert.equal(parameters.randomSeed, "adapter-test");
 });
 
-void test("createPolygonScalarGrid uses plateau as the clamp threshold", () => {
+void test("createNoiseWarpSurfaces keeps displacement outside the bbox at zero", () => {
   const shape = new PolygonShape(squarePoints(2.0));
-  const lowPlateauGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 4.0, plateau: 0.5 });
-  const highPlateauGrid = createPolygonScalarGrid(shape, { worldBounds: { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, samplesPerUnit: 4.0, gain: 4.0, plateau: 1.5 });
-  const centerIndex = scalarGridIndex(lowPlateauGrid, 4, 4);
+  const surfaces = createNoiseWarpSurfaces(
+    shape,
+    { minX: -3.0, minY: -3.0, maxX: 3.0, maxY: 3.0 },
+    4.0,
+    1.0,
+    1.0,
+    {
+      force: 40,
+      scale: DEFAULT_NOISE_PARAMETERS.scale,
+      silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+      gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+      showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+      vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+      spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+      amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+      swirlDensity: DEFAULT_NOISE_PARAMETERS.swirlDensity,
+      swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+      swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+      swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+      swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+      directionNoiseMix: DEFAULT_NOISE_PARAMETERS.directionNoiseMix,
+      randomSeed: "surface-test",
+    },
+  );
 
-  approximatelyEqual(lowPlateauGrid.values[centerIndex], 0.5, DEFAULT_EPSILON);
-  approximatelyEqual(highPlateauGrid.values[centerIndex], satur(0.35 * 4.0, 1.5), DEFAULT_EPSILON);
-  assert.ok(highPlateauGrid.values[centerIndex] > lowPlateauGrid.values[centerIndex]);
+  const outsideIndex = scalarGridIndex(surfaces.amplitudeGrid, 0, 0);
+  assert.equal(surfaces.amplitudeGrid.values[outsideIndex], 0.0);
+});
+
+void test("createNoiseWarpSurfaces uses gain and plateau to shape generated magnitude", () => {
+  const commonParameters = {
+    force: 40,
+    scale: DEFAULT_NOISE_PARAMETERS.scale,
+    silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+    gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+    showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+    vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+    spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+    amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+    swirlDensity: 0,
+    swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+    swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+    swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+    swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+    directionNoiseMix: 1,
+    randomSeed: "gain-test",
+  };
+  const shape = new PolygonShape(squarePoints(2.0));
+  const lowGain = createNoiseWarpSurfaces(shape, { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, 4.0, 0.5, 100.0, commonParameters);
+  const highGain = createNoiseWarpSurfaces(shape, { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, 4.0, 1.0, 100.0, commonParameters);
+  const lowGainTotal = lowGain.amplitudeGrid.values.reduce((sum, value) => sum + value, 0);
+  const highGainTotal = highGain.amplitudeGrid.values.reduce((sum, value) => sum + value, 0);
+
+  assert.ok(highGainTotal > lowGainTotal);
+
+  const lowPlateau = createNoiseWarpSurfaces(shape, { minX: 0.0, minY: 0.0, maxX: 2.0, maxY: 2.0 }, 4.0, 4.0, 0.2, commonParameters);
+  const lowPlateauPeak = Math.max(...lowPlateau.amplitudeGrid.values);
+  assert.ok(lowPlateauPeak <= 0.2 + DEFAULT_EPSILON);
+
+  const largerShape = new PolygonShape(squarePoints(20.0));
+  const largePlateau = createNoiseWarpSurfaces(largerShape, { minX: 0.0, minY: 0.0, maxX: 20.0, maxY: 20.0 }, 4.0, 4.0, 0.2, commonParameters);
+  const largePlateauPeak = Math.max(...largePlateau.amplitudeGrid.values);
+  assert.ok(largePlateauPeak <= 2.0 + DEFAULT_EPSILON);
+  assert.ok(largePlateauPeak > 1.0);
 });
 
 void test("sampleTransferCurve follows satur(gain * x, plateau)", () => {
@@ -203,17 +281,35 @@ void test("sampleTransferCurve follows satur(gain * x, plateau)", () => {
   approximatelyEqual(samples[2].y, satur(1.5 * 0.5, 0.75), DEFAULT_EPSILON);
 });
 
-void test("createPolygonScalarGrid resolves rectangular grids from explicit world bounds", () => {
+void test("createNoiseWarpSurfaces resolves rectangular world grids from explicit bounds", () => {
   const shape = new PolygonShape(squarePoints(2.0));
-  const grid = createPolygonScalarGrid(shape, {
-    worldBounds: { minX: -2.0, minY: -1.0, maxX: 2.0, maxY: 1.0 },
-    samplesPerUnit: 2.0,
-    gain: 1.0,
-    plateau: 1.0,
-  });
+  const surfaces = createNoiseWarpSurfaces(
+    shape,
+    { minX: -2.0, minY: -1.0, maxX: 2.0, maxY: 1.0 },
+    2.0,
+    1.0,
+    1.0,
+    {
+      force: 20,
+      scale: DEFAULT_NOISE_PARAMETERS.scale,
+      silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+      gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+      showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+      vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+      spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+      amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+      swirlDensity: DEFAULT_NOISE_PARAMETERS.swirlDensity,
+      swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+      swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+      swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+      swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+      directionNoiseMix: DEFAULT_NOISE_PARAMETERS.directionNoiseMix,
+      randomSeed: "rectangular-grid",
+    },
+  );
 
-  assert.equal(grid.spec.columns, 9);
-  assert.equal(grid.spec.rows, 5);
+  assert.equal(surfaces.amplitudeGrid.spec.columns, 9);
+  assert.equal(surfaces.amplitudeGrid.spec.rows, 5);
 });
 
 void test("transferCurvePathData maps samples into plot coordinates", () => {

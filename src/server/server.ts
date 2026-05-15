@@ -10,20 +10,34 @@ import {
   PARAMETER_DEFINITIONS as NOISE_PARAMETER_DEFINITIONS,
   PARAMETER_GROUPS as NOISE_PARAMETER_GROUPS,
 } from "noise_generator";
+import { PolygonShape } from "../lib/polygon-shape.js";
 import { parseGeometrySvg } from "./parse-geometry-svg.js";
+import {
+  createNoiseGeneratorParameters,
+} from "./noise-field-adapter.js";
 import { renderWarpScene } from "./render-warp-scene.js";
 import { parseWarpRequest, WarpRequestError, type WarpResponse } from "../shared/warp-request.js";
 import {
+  type NoiseParameterDefinition,
+  type NoiseParameterGroup,
+  type NoisePreviewSchemaResponse,
+  type NoisePreviewResponse,
   NoisePreviewRequestError,
   parseNoisePreviewRequest,
-  type NoisePreviewResponse,
-  type NoisePreviewSchemaResponse,
 } from "../shared/noise-preview.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDirectory = path.dirname(currentFile);
 const projectRoot = path.resolve(currentDirectory, "../..");
 const sourceRoot = path.join(projectRoot, "src");
+
+interface ValidatedNoisePreviewRequest {
+  readonly geometry: {
+    readonly format: "svg-polyline-overlay/v1";
+    readonly svg: string;
+  };
+  readonly parameters: Partial<NoisePreviewSchemaResponse["defaultParameters"]>;
+}
 
 export function createAppServer(): Server {
   return createServer((request, response) => {
@@ -115,10 +129,27 @@ function handleNoiseSchemaRoute(method: string, response: ServerResponse): void 
     return;
   }
 
+  const defaultParameters: NoisePreviewSchemaResponse["defaultParameters"] = {
+    force: DEFAULT_NOISE_PARAMETERS.force,
+    scale: DEFAULT_NOISE_PARAMETERS.scale,
+    silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+    gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+    showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+    vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+    spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+    amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+    swirlDensity: DEFAULT_NOISE_PARAMETERS.swirlDensity,
+    swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+    swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+    swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+    swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+    directionNoiseMix: DEFAULT_NOISE_PARAMETERS.directionNoiseMix,
+    randomSeed: DEFAULT_NOISE_PARAMETERS.randomSeed,
+  };
   const payload: NoisePreviewSchemaResponse = {
-    defaultParameters: DEFAULT_NOISE_PARAMETERS,
-    parameterGroups: NOISE_PARAMETER_GROUPS,
-    parameterDefinitions: NOISE_PARAMETER_DEFINITIONS,
+    defaultParameters,
+    parameterGroups: filteredNoiseParameterGroups(),
+    parameterDefinitions: filteredNoiseParameterDefinitions(),
   };
   sendJson(response, 200, payload, method === "HEAD");
 }
@@ -135,10 +166,50 @@ async function handleNoiseGenerateRoute(request: IncomingMessage, response: Serv
 
   try {
     const body = await readRequestBody(request);
-    const noiseRequest = parseNoisePreviewRequest(body);
-    const preview = generateDisplacementPreview(noiseRequest.parameters);
+    const noiseRequest: ValidatedNoisePreviewRequest = parseNoisePreviewRequest(body);
+    const geometry = parseGeometrySvg({
+      format: noiseRequest.geometry.format,
+      svg: noiseRequest.geometry.svg,
+    });
+    const preview = generateDisplacementPreview(createNoiseGeneratorParameters(
+      {
+        force: DEFAULT_NOISE_PARAMETERS.force,
+        scale: DEFAULT_NOISE_PARAMETERS.scale,
+        silenceCutoffPercent: DEFAULT_NOISE_PARAMETERS.silenceCutoffPercent,
+        gridSparseness: DEFAULT_NOISE_PARAMETERS.gridSparseness,
+        showHeatmap: DEFAULT_NOISE_PARAMETERS.showHeatmap,
+        vectorOverlayDensity: DEFAULT_NOISE_PARAMETERS.vectorOverlayDensity,
+        spectralSlopeDbPerOct: DEFAULT_NOISE_PARAMETERS.spectralSlopeDbPerOct,
+        amplitudeContrast: DEFAULT_NOISE_PARAMETERS.amplitudeContrast,
+        swirlDensity: DEFAULT_NOISE_PARAMETERS.swirlDensity,
+        swirlMinimumAngleDegrees: DEFAULT_NOISE_PARAMETERS.swirlMinimumAngleDegrees,
+        swirlStrengthPercent: DEFAULT_NOISE_PARAMETERS.swirlStrengthPercent,
+        swirlFalloff: DEFAULT_NOISE_PARAMETERS.swirlFalloff,
+        swirlDirectionBias: DEFAULT_NOISE_PARAMETERS.swirlDirectionBias,
+        directionNoiseMix: DEFAULT_NOISE_PARAMETERS.directionNoiseMix,
+        randomSeed: DEFAULT_NOISE_PARAMETERS.randomSeed,
+        ...noiseRequest.parameters,
+      },
+      new PolygonShape(geometry.outerBoundary).min_ortho_rectangle(),
+    ));
     const payload: NoisePreviewResponse = {
-      parameters: preview.parameters,
+      parameters: {
+        force: preview.parameters.force,
+        scale: preview.parameters.scale,
+        silenceCutoffPercent: preview.parameters.silenceCutoffPercent,
+        gridSparseness: preview.parameters.gridSparseness,
+        showHeatmap: preview.parameters.showHeatmap,
+        vectorOverlayDensity: preview.parameters.vectorOverlayDensity,
+        spectralSlopeDbPerOct: preview.parameters.spectralSlopeDbPerOct,
+        amplitudeContrast: preview.parameters.amplitudeContrast,
+        swirlDensity: preview.parameters.swirlDensity,
+        swirlMinimumAngleDegrees: preview.parameters.swirlMinimumAngleDegrees,
+        swirlStrengthPercent: preview.parameters.swirlStrengthPercent,
+        swirlFalloff: preview.parameters.swirlFalloff,
+        swirlDirectionBias: preview.parameters.swirlDirectionBias,
+        directionNoiseMix: preview.parameters.directionNoiseMix,
+        randomSeed: preview.parameters.randomSeed,
+      },
       svg: preview.svg,
     };
     sendJson(response, 200, payload);
@@ -147,6 +218,63 @@ async function handleNoiseGenerateRoute(request: IncomingMessage, response: Serv
     const status = error instanceof NoisePreviewRequestError || error instanceof WarpRequestError ? 400 : 500;
     sendText(response, status, message);
   }
+}
+
+function filteredNoiseParameterDefinitions(): NoiseParameterDefinition[] {
+  const definitions: NoiseParameterDefinition[] = [];
+
+  for (const definition of NOISE_PARAMETER_DEFINITIONS) {
+    if (definition.key === "renderWidth" || definition.key === "renderHeight") {
+      continue;
+    }
+
+    if (definition.key === "showHeatmap") {
+      definitions.push({
+        group: definition.group,
+        key: definition.key,
+        label: definition.label,
+        description: definition.description,
+      });
+      continue;
+    }
+
+    if (definition.key === "randomSeed") {
+      definitions.push({
+        group: definition.group,
+        key: definition.key,
+        label: definition.label,
+        description: definition.description,
+      });
+      continue;
+    }
+
+    definitions.push({
+      group: definition.group,
+      key: definition.key,
+      label: definition.label,
+      description: definition.description,
+      min: definition.min,
+      max: definition.max,
+      step: definition.step,
+      integer: definition.integer,
+    });
+  }
+
+  return definitions;
+}
+
+function filteredNoiseParameterGroups(): NoiseParameterGroup[] {
+  return NOISE_PARAMETER_GROUPS.map((group) => {
+    if (group.key !== "display") {
+      return group;
+    }
+
+    return {
+      key: group.key,
+      label: group.label,
+      description: "Controls for simulation density and visible overlays. SVG size is derived from the outer polygon bbox.",
+    };
+  });
 }
 
 async function serveBrowserModule(relativePath: string, response: ServerResponse, headOnly: boolean): Promise<void> {

@@ -1,31 +1,13 @@
-export interface NoiseParameterValues {
-  renderWidth: number;
-  renderHeight: number;
-  force: number;
-  scale: number;
-  gridSparseness: number;
-  showHeatmap: boolean;
-  vectorOverlayDensity: number;
-  spectralSlopeDbPerOct: number;
-  amplitudeContrast: number;
-  swirlDensity: number;
-  swirlMinimumAngleDegrees: number;
-  swirlStrengthPercent: number;
-  swirlFalloff: number;
-  swirlDirectionBias: number;
-  directionNoiseMix: number;
-  randomSeed: string;
-}
+import {
+  type NoiseBooleanParameterKey,
+  type NoiseEditableParameterValues,
+  type NoiseNumericParameterKey,
+  validatePartialNoiseEditableParameters,
+} from "./noise-parameters.js";
 
-export type NoiseNumericParameterKey = Exclude<
-  keyof NoiseParameterValues,
-  "randomSeed" | "showHeatmap"
->;
+export type { NoiseBooleanParameterKey, NoiseEditableParameterValues, NoiseNumericParameterKey } from "./noise-parameters.js";
 
-export type NoiseBooleanParameterKey = Extract<
-  keyof NoiseParameterValues,
-  "showHeatmap"
->;
+export type NoiseParameterValues = NoiseEditableParameterValues;
 
 export interface NoiseParameterGroup {
   readonly key: string;
@@ -64,17 +46,23 @@ export type NoiseParameterDefinition =
   | NoiseSeedParameterDefinition;
 
 export interface NoisePreviewSchemaResponse {
-  readonly defaultParameters: NoiseParameterValues;
+  readonly defaultParameters: NoiseEditableParameterValues;
   readonly parameterGroups: readonly NoiseParameterGroup[];
   readonly parameterDefinitions: readonly NoiseParameterDefinition[];
 }
 
+export interface NoisePreviewGeometry {
+  readonly format: "svg-polyline-overlay/v1";
+  readonly svg: string;
+}
+
 export interface NoisePreviewRequest {
-  readonly parameters: Partial<NoiseParameterValues>;
+  readonly geometry: NoisePreviewGeometry;
+  readonly parameters: Partial<NoiseEditableParameterValues>;
 }
 
 export interface NoisePreviewResponse {
-  readonly parameters: NoiseParameterValues;
+  readonly parameters: NoiseEditableParameterValues;
   readonly svg: string;
 }
 
@@ -98,15 +86,38 @@ export function parseNoisePreviewRequest(body: string): NoisePreviewRequest {
     throw new NoisePreviewRequestError("Noise preview request body must be a JSON object.");
   }
 
-  const { parameters } = parsedBody;
-  if (!isObjectRecord(parameters)) {
-    throw new NoisePreviewRequestError("Noise preview request must include a parameters object.");
+  const geometry = validateNoisePreviewGeometry(parsedBody.geometry);
+  let requestParameters: Partial<NoiseEditableParameterValues>;
+
+  try {
+    requestParameters = validatePartialNoiseEditableParameters(parsedBody.parameters);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Noise preview parameters are invalid.";
+    throw new NoisePreviewRequestError(message);
   }
 
-  const requestParameters: Partial<NoiseParameterValues> = { ...parameters };
+  return {
+    geometry,
+    parameters: requestParameters,
+  };
+}
+
+function validateNoisePreviewGeometry(value: unknown): NoisePreviewGeometry {
+  if (!isObjectRecord(value)) {
+    throw new NoisePreviewRequestError("Noise preview request must include a geometry object.");
+  }
+
+  if (value.format !== "svg-polyline-overlay/v1") {
+    throw new NoisePreviewRequestError("geometry.format must be svg-polyline-overlay/v1.");
+  }
+
+  if (typeof value.svg !== "string" || value.svg.trim() === "") {
+    throw new NoisePreviewRequestError("geometry.svg must be a non-empty string.");
+  }
 
   return {
-    parameters: requestParameters,
+    format: "svg-polyline-overlay/v1",
+    svg: value.svg,
   };
 }
 
